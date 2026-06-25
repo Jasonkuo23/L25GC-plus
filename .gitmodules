@@ -36,7 +36,8 @@
 	branch = next
 [submodule "onvm-upf"]
 	path = NFs/onvm-upf
-	url = https://github.com/nycu-ucr/onvm-upf.git
+	url = https://github.com/Jasonkuo23/onvm-upf
+	branch = feat/NAT-implementation
 [submodule "xio"]
 	path = NFs/xio
 	url = https://github.com/nycu-ucr/onvmpoller.git
