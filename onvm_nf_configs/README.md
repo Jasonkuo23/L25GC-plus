@@ -77,6 +77,7 @@ These mappings are consumed by ONVM NFs (e.g., UPF, SMF, NRF) to **determine how
 | `http_client.json` | HTTP-based ONVM NF (client mode) |
 | `http_server.json` | HTTP-based ONVM NF (server mode) |
 | `nrf.json`         | ONVM config for NRF NF           |
+| `n3iwf_dp.json`    | DPDK N3IWF user-plane NF (service/instance 14) |
 | `nssf.json`        | ONVM config for NSSF NF          |
 | `onvmConfig.json`  | Global or fallback ONVM config   |
 | `pcf.json`         | ONVM config for PCF NF           |
