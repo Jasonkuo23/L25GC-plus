@@ -1,6 +1,9 @@
 #!/bin/bash
 
-cd /users/will_lin/L25GC-plus/onvm_test
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+N3IWF_BIN="/home/ubuntu/free5gc/NFs/n3iwf/n3iwf"
+
+cd "$(dirname "$0")"
 
 echo "========================================"
 echo "Starting N3IWF for Non-3GPP Test"
@@ -32,12 +35,23 @@ sudo pkill -9 -f "n3iwf.*n3iwfcfg_test" 2>/dev/null || true
 sleep 1
 
 # Setup network interface
-echo "[1/4] Setting up network interface..."
-sudo ip link add name n3iwf-ue type dummy 2>/dev/null || true
-sudo ip addr add 192.168.127.2/24 dev n3iwf-ue 2>/dev/null || true
-sudo ip addr add 192.168.127.1/24 dev n3iwf-ue 2>/dev/null || true
+echo "[1/5] Setting up NWu test interface..."
+if sudo ip netns exec n3iwue ip link show n3ue-nwu >/dev/null 2>&1; then
+    sudo ip link show n3iwf-ue >/dev/null 2>&1 || {
+        echo "✗ Namespace n3iwue exists, but host interface n3iwf-ue is missing."
+        echo "  Recreate it with: sudo ./setup_n3iwue_netns.sh"
+        exit 1
+    }
+    sudo ip addr add 192.168.127.1/24 dev n3iwf-ue 2>/dev/null || true
+else
+    sudo ip link add name n3iwf-ue type dummy 2>/dev/null || true
+    sudo ip addr add 192.168.127.2/24 dev n3iwf-ue 2>/dev/null || true
+    sudo ip addr add 192.168.127.1/24 dev n3iwf-ue 2>/dev/null || true
+fi
 sudo ip link set n3iwf-ue up
-echo "✓ Network interface ready"
+echo "✓ NWu test interface ready"
+echo "  n3iwf-ue is only for local UE<->N3IWF IKE/IPsec traffic."
+echo "  Do not use it to ping AMF/N2 or DN/N6 addresses."
 
 # Clean up any existing XFRM interface (from previous runs)
 echo "[2/5] Cleaning up old XFRM interface..."
@@ -68,7 +82,7 @@ if [ ! -f config/n3iwfcfg_test.yaml ]; then
 fi
 
 # Check n3iwf binary exists
-if [ ! -f ../free5gc/NFs/n3iwf/n3iwf ]; then
+if [ ! -x "$N3IWF_BIN" ]; then
     echo "✗ N3IWF binary not found"
     echo "Build it with: cd ../free5gc/NFs/n3iwf && go build -o n3iwf cmd/main.go"
     exit 1
@@ -83,7 +97,7 @@ fi
 
 # Start N3IWF
 echo "[4/5] Starting N3IWF..."
-sudo nohup ../free5gc/NFs/n3iwf/n3iwf -c config/n3iwfcfg_test.yaml > n3iwf_test.log 2>&1 &
+sudo nohup "$N3IWF_BIN" -c config/n3iwfcfg_test.yaml > n3iwf_test.log 2>&1 &
 echo $! > n3iwf_test.pid
 sleep 3
 
@@ -112,11 +126,11 @@ echo "========================================"
 echo ""
 echo "To view logs:  tail -f n3iwf_test.log"
 echo "To stop:       sudo ./stop_n3iwf.sh"
-echo "To run test:   sudo ./run_non3gpp_test.sh"
+echo "To run test:   sudo ./RUN_NON3GPP_TEST.sh"
 echo ""
 echo "========================================"
 echo ""
 echo "To view logs:  tail -f n3iwf_test.log"
 echo "To stop:       sudo ./stop_n3iwf.sh"
-echo "To run test:   sudo ./run_non3gpp_test.sh"
+echo "To run test:   sudo ./RUN_NON3GPP_TEST.sh"
 echo ""

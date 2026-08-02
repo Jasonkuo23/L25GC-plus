@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd /users/will_lin/L25GC-plus/onvm_test
+cd "$(dirname "$0")"
 
 echo "========================================"
 echo "Stopping N3IWF for Non-3GPP Test"
@@ -69,5 +69,4 @@ echo "========================================"
 echo "✅ N3IWF Stopped!"
 echo "========================================"
 echo ""
-
 

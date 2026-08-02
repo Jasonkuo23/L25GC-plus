@@ -617,7 +617,7 @@ func TestNon3GPPUE(t *testing.T) {
 	// SUCI: suci-0-208-93-0-0-0-7488 -> MSIN in BCD: 0x00,0x00,0x00,0x00,0x00,0x47,0x88
 	// New UE with NON_3GPP_ACCESS type (Bearer fix!)
 	// Use the SAME IMSI as registration_test.go
-	ue := NewRanUeContext("imsi-208930000007488", 1, security.AlgCiphering128NEA0, security.AlgIntegrity128NIA2,
+	ue := NewRanUeContext("imsi-208930000000001", 1, security.AlgCiphering128NEA0, security.AlgIntegrity128NIA2,
 		models.AccessType_NON_3_GPP_ACCESS)
 	ue.AmfUeNgapId = 1
 	ue.AuthenticationSubs = authSubs
