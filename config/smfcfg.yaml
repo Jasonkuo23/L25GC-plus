@@ -91,7 +91,8 @@ configuration:
         interfaces: # Interface list for this UPF
           - interfaceType: N3 # the type of the interface (N3 or N9)
             endpoints: # the IP address of this N3/N9 interface on this UPF
-              - 127.0.0.8
+              # Logical ONVM N3 endpoint; no Linux interface is required.
+              - 192.168.2.2
             networkInstances: # Data Network Name (DNN)
               - internet
 

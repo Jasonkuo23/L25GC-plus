@@ -36,7 +36,7 @@ type options struct {
 func parseOptions() options {
 	var opts options
 
-	flag.StringVar(&opts.operation, "operation", "hello", "hello, upsert, or delete")
+	flag.StringVar(&opts.operation, "operation", "hello", "hello, upsert, delete, or stats")
 	flag.StringVar(&opts.socket, "socket", "/run/l25gc/n3iwf-dp.sock", "N3DP Unix socket path")
 	flag.DurationVar(&opts.timeout, "timeout", 2*time.Second, "control request timeout")
 	flag.Uint64Var(&opts.generation, "generation", 0, "monotonic UE/session generation")
@@ -76,8 +76,32 @@ func run(opts options) error {
 
 	switch opts.operation {
 	case "hello":
-		return client.Hello(ctx)
+		return client.HelloObserver(ctx)
+	case "stats":
+		stats, err := client.GetStats(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("uplink_packets=%d\n", stats.UplinkPackets)
+		fmt.Printf("downlink_packets=%d\n", stats.DownlinkPackets)
+		fmt.Printf("unknown_teid=%d\n", stats.UnknownTEID)
+		fmt.Printf("unknown_qfi=%d\n", stats.UnknownQFI)
+		fmt.Printf("malformed_packets=%d\n", stats.MalformedPackets)
+		fmt.Printf("replay_drops=%d\n", stats.ReplayDrops)
+		fmt.Printf("crypto_failures=%d\n", stats.CryptoFailures)
+		fmt.Printf("fragment_drops=%d\n", stats.FragmentDrops)
+		fmt.Printf("stale_updates=%d\n", stats.StaleUpdates)
+		fmt.Printf("control_to_cp=%d\n", stats.ControlToCP)
+		fmt.Printf("control_from_cp=%d\n", stats.ControlFromCP)
+		fmt.Printf("control_punt_drops=%d\n", stats.ControlPuntDrops)
+		fmt.Printf("access_mac_learns=%d\n", stats.AccessMACLearns)
+		fmt.Printf("access_mac_changes=%d\n", stats.AccessMACChanges)
+		fmt.Printf("access_neighbor_drops=%d\n", stats.AccessNeighborDrops)
+		return nil
 	case "upsert":
+		if err := client.Hello(ctx); err != nil {
+			return fmt.Errorf("acquire dataplane writer role: %w", err)
+		}
 		pduSessionID, err := validateUint32("pdu-session-id", opts.pduSessionID)
 		if err != nil {
 			return err
@@ -109,6 +133,9 @@ func run(opts options) error {
 			QFIs:            []uint8{uint8(opts.qfi)},
 		})
 	case "delete":
+		if err := client.Hello(ctx); err != nil {
+			return fmt.Errorf("acquire dataplane writer role: %w", err)
+		}
 		pduSessionID, err := validateUint32("pdu-session-id", opts.pduSessionID)
 		if err != nil {
 			return err
@@ -118,7 +145,7 @@ func run(opts options) error {
 		}
 		return client.DeleteSession(ctx, opts.generation, opts.ueID, pduSessionID)
 	default:
-		return fmt.Errorf("unsupported -operation %q (want hello, upsert, or delete)", opts.operation)
+		return fmt.Errorf("unsupported -operation %q (want hello, upsert, delete, or stats)", opts.operation)
 	}
 }
 

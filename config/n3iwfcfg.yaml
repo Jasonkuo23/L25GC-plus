@@ -32,14 +32,17 @@ configuration:
   nasTcpPort: 20000 # TCP port which the NAS listens on
 
   # --- Nwu Interfaces ---
-  ikeBindAddress: 172.16.2.100 # Nwu interface  IP address (IKE) on this N3IWF
+  ikeBindAddress: 192.168.127.1 # NWu endpoint presented by the CP punt/TAP path
   ipSecTunnelAddress: 10.0.0.1 # Tunnel IP address of XFRM interface on this N3IWF
   ueIpAddressRange: 10.0.0.0/24 # IP address pool allocated to UE in IPSec tunnel
   xfrmInterfaceName: xfrmi # Prefix of XFRM interface name created by N3IWF
   xfrmInterfaceID: 1 # XFRM interface if_id for IPSec routing (Any value except to 0, default value is 7 if not defined)
 
   # --- N3 Interfaces ---
-  n3iwfGtpBindAddress: 127.0.0.33 # IP address of N3 interface (GTP) on this N3IWF
+  # Logical N3 address carried in ONVM mbufs; it is not a Linux interface.
+  n3iwfGtpBindAddress: 192.168.2.1
+  userPlaneBackend: onvm
+  n3iwfDpControlSocket: /run/l25gc/n3iwf-dp.sock
 
   fqdn: n3iwf.free5gc.org # FQDN of this N3IWF
 

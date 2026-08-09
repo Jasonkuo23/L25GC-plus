@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
@@ -26,6 +27,12 @@ const (
 	MessageStatsGet      uint16 = 6
 	MessageACK           uint16 = 0x8000
 	MessageStats         uint16 = 0x8001
+)
+
+const (
+	RoleWriter   uint8 = 1
+	RoleObserver uint8 = 2
+	maxKeyLen          = 64
 )
 
 type Status uint32
@@ -53,10 +60,59 @@ type Session struct {
 	QFIs            []uint8
 }
 
+// ChildSA is one bidirectional ESP SA pair. Algorithm identifiers are IKEv2
+// Transform IDs. Keys are named from the N3IWF dataplane's direction.
+type ChildSA struct {
+	UEID                  uint64
+	PDUSessionID          uint32
+	InboundSPI            uint32
+	OutboundSPI           uint32
+	EncryptionID          uint16
+	IntegrityID           uint16
+	LocalPort             uint16
+	PeerPort              uint16
+	ReplayWindow          uint32
+	NATT                  bool
+	ESN                   bool
+	OutboundSequence      uint64
+	SoftLifetimeSeconds   uint64
+	HardLifetimeSeconds   uint64
+	LocalAddress          net.IP
+	PeerAddress           net.IP
+	LocalSelector         net.IP
+	PeerSelector          net.IP
+	IPProtocol            uint8
+	InboundEncryptionKey  []byte
+	InboundIntegrityKey   []byte
+	OutboundEncryptionKey []byte
+	OutboundIntegrityKey  []byte
+}
+
 type ACK struct {
 	Status            Status
 	Detail            uint32
 	AppliedGeneration uint64
+}
+
+// Stats is a point-in-time snapshot of N3IWF-DP counters. Counters are
+// cumulative from NF startup and intentionally use the same names as the C
+// dataplane contract.
+type Stats struct {
+	UplinkPackets       uint64
+	DownlinkPackets     uint64
+	UnknownTEID         uint64
+	UnknownQFI          uint64
+	MalformedPackets    uint64
+	ReplayDrops         uint64
+	CryptoFailures      uint64
+	FragmentDrops       uint64
+	StaleUpdates        uint64
+	ControlToCP         uint64
+	ControlFromCP       uint64
+	ControlPuntDrops    uint64
+	AccessMACLearns     uint64
+	AccessMACChanges    uint64
+	AccessNeighborDrops uint64
 }
 
 type Client struct {
@@ -98,7 +154,32 @@ func (c *Client) connect() error {
 }
 
 func (c *Client) Hello(ctx context.Context) error {
-	_, err := c.roundTrip(ctx, MessageHello, 0, nil)
+	_, err := c.roundTrip(ctx, MessageHello, 0, []byte{RoleWriter, 0, 0, 0})
+	return err
+}
+
+func (c *Client) HelloObserver(ctx context.Context) error {
+	_, err := c.roundTrip(ctx, MessageHello, 0, []byte{RoleObserver, 0, 0, 0})
+	return err
+}
+
+func (c *Client) UpsertChildSA(ctx context.Context, generation uint64, sa ChildSA) error {
+	payload, err := marshalChildSA(sa)
+	if err != nil {
+		return err
+	}
+	defer clearBytes(payload)
+	_, err = c.roundTrip(ctx, MessageChildSAUpsert, generation, payload)
+	return err
+}
+
+func (c *Client) DeleteChildSA(ctx context.Context, generation uint64,
+	ueID uint64, pduSessionID uint32, inboundSPI uint32) error {
+	payload := make([]byte, 16)
+	binary.BigEndian.PutUint64(payload[0:8], ueID)
+	binary.BigEndian.PutUint32(payload[8:12], pduSessionID)
+	binary.BigEndian.PutUint32(payload[12:16], inboundSPI)
+	_, err := c.roundTrip(ctx, MessageChildSADelete, generation, payload)
 	return err
 }
 
@@ -124,37 +205,65 @@ func (c *Client) DeleteSession(
 	return err
 }
 
+// GetStats returns a validated counter snapshot from N3IWF-DP.
+func (c *Client) GetStats(ctx context.Context) (Stats, error) {
+	response, xid, err := c.exchange(ctx, MessageStatsGet, 0, nil)
+	if err != nil {
+		return Stats{}, err
+	}
+	return parseStats(response, xid)
+}
+
 func (c *Client) roundTrip(
 	ctx context.Context,
 	messageType uint16,
 	generation uint64,
 	payload []byte,
 ) (ACK, error) {
+	response, xid, err := c.exchange(ctx, messageType, generation, payload)
+	if err != nil {
+		return ACK{}, err
+	}
+	return parseACK(response, xid)
+}
+
+func (c *Client) exchange(
+	ctx context.Context,
+	messageType uint16,
+	generation uint64,
+	payload []byte,
+) ([]byte, uint32, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if err := c.connect(); err != nil {
-		return ACK{}, err
+		return nil, 0, err
 	}
 	c.xid++
-	request := marshalMessage(messageType, c.xid, generation, payload)
+	xid := c.xid
+	request := marshalMessage(messageType, xid, generation, payload)
+	defer clearBytes(request)
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := c.conn.SetDeadline(deadline); err != nil {
-			return ACK{}, err
+			return nil, 0, err
 		}
+	} else if err := c.conn.SetDeadline(time.Time{}); err != nil {
+		return nil, 0, err
 	}
 	if _, err := c.conn.Write(request); err != nil {
 		_ = c.conn.Close()
 		c.conn = nil
-		return ACK{}, err
+		return nil, 0, err
 	}
 
 	response := make([]byte, 2048)
 	n, err := c.conn.Read(response)
 	if err != nil {
-		return ACK{}, err
+		_ = c.conn.Close()
+		c.conn = nil
+		return nil, 0, err
 	}
-	return parseACK(response[:n], c.xid)
+	return response[:n], xid, nil
 }
 
 func marshalMessage(messageType uint16, xid uint32, generation uint64, payload []byte) []byte {
@@ -170,12 +279,12 @@ func marshalMessage(messageType uint16, xid uint32, generation uint64, payload [
 }
 
 func marshalSession(session Session) ([]byte, error) {
-	if session.UEID == 0 || session.PDUSessionID == 0 ||
+	if session.PDUSessionID == 0 ||
 		session.UplinkTEID == 0 || session.DownlinkTEID == 0 {
 		return nil, errors.New("UE, PDU session and TEID identifiers must be non-zero")
 	}
-	if len(session.QFIs) != 1 {
-		return nil, errors.New("wire version 1 requires exactly one active QFI")
+	if len(session.QFIs) == 0 || len(session.QFIs) > maxQFI {
+		return nil, errors.New("wire version 1 requires 1..63 active QFIs")
 	}
 
 	family, uePDU, err := encodeIP(session.UEPDUAddress)
@@ -225,6 +334,84 @@ func marshalSession(session Session) ([]byte, error) {
 		payload[104+index] = qfi
 	}
 	return payload, nil
+}
+
+func marshalChildSA(sa ChildSA) ([]byte, error) {
+	if sa.InboundSPI == 0 || sa.OutboundSPI == 0 || sa.EncryptionID == 0 ||
+		sa.ReplayWindow == 0 || sa.IPProtocol == 0 {
+		return nil, errors.New("Child SA SPI, encryption, replay window and protocol are required")
+	}
+	family, local, err := encodeIP(sa.LocalAddress)
+	if err != nil {
+		return nil, fmt.Errorf("local address: %w", err)
+	}
+	_, peer, err := encodeIPFamily(sa.PeerAddress, family)
+	if err != nil {
+		return nil, fmt.Errorf("peer address: %w", err)
+	}
+	_, localSelector, err := encodeIPFamily(sa.LocalSelector, family)
+	if err != nil {
+		return nil, fmt.Errorf("local selector: %w", err)
+	}
+	_, peerSelector, err := encodeIPFamily(sa.PeerSelector, family)
+	if err != nil {
+		return nil, fmt.Errorf("peer selector: %w", err)
+	}
+	keys := [][]byte{sa.InboundEncryptionKey, sa.InboundIntegrityKey,
+		sa.OutboundEncryptionKey, sa.OutboundIntegrityKey}
+	if len(keys[0]) == 0 || len(keys[2]) == 0 {
+		return nil, errors.New("Child SA encryption keys are required")
+	}
+	for _, key := range keys {
+		if len(key) > maxKeyLen {
+			return nil, errors.New("Child SA key exceeds 64 bytes")
+		}
+	}
+	if sa.IntegrityID == 0 && (len(keys[1]) != 0 || len(keys[3]) != 0) {
+		return nil, errors.New("integrity keys supplied without an integrity transform")
+	}
+	if sa.IntegrityID != 0 && (len(keys[1]) == 0 || len(keys[3]) == 0) {
+		return nil, errors.New("integrity transform requires directional keys")
+	}
+	const fixedLen = 68 + (4 * 16) + (4 * maxKeyLen)
+	p := make([]byte, fixedLen)
+	binary.BigEndian.PutUint64(p[0:8], sa.UEID)
+	binary.BigEndian.PutUint32(p[8:12], sa.PDUSessionID)
+	binary.BigEndian.PutUint32(p[12:16], sa.InboundSPI)
+	binary.BigEndian.PutUint32(p[16:20], sa.OutboundSPI)
+	binary.BigEndian.PutUint16(p[20:22], sa.EncryptionID)
+	binary.BigEndian.PutUint16(p[22:24], sa.IntegrityID)
+	binary.BigEndian.PutUint16(p[24:26], sa.LocalPort)
+	binary.BigEndian.PutUint16(p[26:28], sa.PeerPort)
+	binary.BigEndian.PutUint32(p[28:32], sa.ReplayWindow)
+	var flags uint32
+	if sa.NATT {
+		flags |= 1
+	}
+	if sa.ESN {
+		flags |= 2
+	}
+	binary.BigEndian.PutUint32(p[32:36], flags)
+	binary.BigEndian.PutUint64(p[36:44], sa.OutboundSequence)
+	binary.BigEndian.PutUint64(p[44:52], sa.SoftLifetimeSeconds)
+	binary.BigEndian.PutUint64(p[52:60], sa.HardLifetimeSeconds)
+	p[60], p[61] = family, sa.IPProtocol
+	p[62], p[63], p[64], p[65] = byte(len(keys[0])), byte(len(keys[1])), byte(len(keys[2])), byte(len(keys[3]))
+	copy(p[68:84], local)
+	copy(p[84:100], peer)
+	copy(p[100:116], localSelector)
+	copy(p[116:132], peerSelector)
+	copy(p[132:196], keys[0])
+	copy(p[196:260], keys[1])
+	copy(p[260:324], keys[2])
+	copy(p[324:388], keys[3])
+	return p, nil
+}
+
+func clearBytes(value []byte) {
+	for i := range value {
+		value[i] = 0
+	}
 }
 
 func encodeIP(ip net.IP) (uint8, []byte, error) {
@@ -281,4 +468,56 @@ func parseACK(message []byte, expectedXID uint32) (ACK, error) {
 			ack.Status, ack.Detail)
 	}
 	return ack, nil
+}
+
+func parseStats(message []byte, expectedXID uint32) (Stats, error) {
+	const legacyStatsPayloadLen = 9 * 8
+	const controlStatsPayloadLen = 12 * 8
+	const statsPayloadLen = 15 * 8
+	if len(message) != headerLen+legacyStatsPayloadLen &&
+		len(message) != headerLen+controlStatsPayloadLen &&
+		len(message) != headerLen+statsPayloadLen {
+		return Stats{}, fmt.Errorf("invalid dataplane stats length %d", len(message))
+	}
+	if binary.BigEndian.Uint32(message[0:4]) != wireMagic {
+		return Stats{}, errors.New("invalid dataplane response magic")
+	}
+	if binary.BigEndian.Uint16(message[4:6]) != wireVersion {
+		return Stats{}, errors.New("unsupported dataplane response version")
+	}
+	if binary.BigEndian.Uint16(message[6:8]) != MessageStats {
+		return Stats{}, errors.New("unexpected dataplane response type")
+	}
+	if int(binary.BigEndian.Uint32(message[8:12])) != len(message) {
+		return Stats{}, errors.New("invalid dataplane response length")
+	}
+	if binary.BigEndian.Uint32(message[12:16]) != expectedXID {
+		return Stats{}, errors.New("dataplane transaction ID mismatch")
+	}
+
+	payload := message[headerLen:]
+	stats := Stats{
+		UplinkPackets:    binary.BigEndian.Uint64(payload[0:8]),
+		DownlinkPackets:  binary.BigEndian.Uint64(payload[8:16]),
+		UnknownTEID:      binary.BigEndian.Uint64(payload[16:24]),
+		UnknownQFI:       binary.BigEndian.Uint64(payload[24:32]),
+		MalformedPackets: binary.BigEndian.Uint64(payload[32:40]),
+		ReplayDrops:      binary.BigEndian.Uint64(payload[40:48]),
+		CryptoFailures:   binary.BigEndian.Uint64(payload[48:56]),
+		FragmentDrops:    binary.BigEndian.Uint64(payload[56:64]),
+		StaleUpdates:     binary.BigEndian.Uint64(payload[64:72]),
+	}
+	// The control-punt counters are an additive v1 extension. Accept the
+	// original response during rolling upgrades.
+	if len(payload) >= controlStatsPayloadLen {
+		stats.ControlToCP = binary.BigEndian.Uint64(payload[72:80])
+		stats.ControlFromCP = binary.BigEndian.Uint64(payload[80:88])
+		stats.ControlPuntDrops = binary.BigEndian.Uint64(payload[88:96])
+	}
+	if len(payload) == statsPayloadLen {
+		stats.AccessMACLearns = binary.BigEndian.Uint64(payload[96:104])
+		stats.AccessMACChanges = binary.BigEndian.Uint64(payload[104:112])
+		stats.AccessNeighborDrops = binary.BigEndian.Uint64(payload[112:120])
+	}
+	return stats, nil
 }
