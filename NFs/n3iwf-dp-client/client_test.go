@@ -54,8 +54,8 @@ func TestMarshalSessionIPv6(t *testing.T) {
 	}
 }
 
-func TestMarshalSessionRejectsMultipleQFIs(t *testing.T) {
-	_, err := marshalSession(Session{
+func TestMarshalSessionSupportsMultipleQFIs(t *testing.T) {
+	payload, err := marshalSession(Session{
 		UEID:            1,
 		PDUSessionID:    1,
 		UplinkTEID:      1,
@@ -67,8 +67,34 @@ func TestMarshalSessionRejectsMultipleQFIs(t *testing.T) {
 		UPFN3Address:    net.ParseIP("10.0.0.5"),
 		QFIs:            []uint8{5, 9},
 	})
-	if err == nil {
-		t.Fatal("multiple QFIs accepted by wire version 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload[21] != 2 || payload[104] != 5 || payload[105] != 9 {
+		t.Fatalf("unexpected QFI encoding: count=%d values=%d,%d",
+			payload[21], payload[104], payload[105])
+	}
+}
+
+func TestMarshalChildSA(t *testing.T) {
+	sa := ChildSA{
+		UEID: 42, PDUSessionID: 10, InboundSPI: 0x1001,
+		OutboundSPI: 0x1002, EncryptionID: 12, IntegrityID: 2,
+		ReplayWindow: 64, LocalAddress: net.ParseIP("192.168.2.2"),
+		PeerAddress:   net.ParseIP("192.168.2.1"),
+		LocalSelector: net.ParseIP("10.0.0.1"),
+		PeerSelector:  net.ParseIP("10.0.0.2"), IPProtocol: 47,
+		InboundEncryptionKey: make([]byte, 32), InboundIntegrityKey: make([]byte, 20),
+		OutboundEncryptionKey: make([]byte, 32), OutboundIntegrityKey: make([]byte, 20),
+	}
+	payload, err := marshalChildSA(sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 388 || binary.BigEndian.Uint32(payload[12:16]) != 0x1001 ||
+		payload[60] != 4 || payload[61] != 47 ||
+		payload[62] != 32 || payload[64] != 32 {
+		t.Fatalf("unexpected Child SA wire encoding")
 	}
 }
 
@@ -89,5 +115,28 @@ func TestParseACK(t *testing.T) {
 	}
 	if ack.AppliedGeneration != 8 {
 		t.Fatalf("generation=%d", ack.AppliedGeneration)
+	}
+}
+
+func TestParseStats(t *testing.T) {
+	message := make([]byte, headerLen+(20*8))
+	binary.BigEndian.PutUint32(message[0:4], wireMagic)
+	binary.BigEndian.PutUint16(message[4:6], wireVersion)
+	binary.BigEndian.PutUint16(message[6:8], MessageStats)
+	binary.BigEndian.PutUint32(message[8:12], uint32(len(message)))
+	binary.BigEndian.PutUint32(message[12:16], 91)
+	for index := uint64(0); index < 20; index++ {
+		binary.BigEndian.PutUint64(message[headerLen+(index*8):], index+11)
+	}
+	stats, err := parseStats(message, 91)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.UplinkPackets != 11 || stats.ControlPuntDrops != 22 ||
+		stats.AccessMACLearns != 23 || stats.AccessMACChanges != 24 ||
+		stats.AccessNeighborDrops != 25 || stats.ActiveSessions != 26 ||
+		stats.ActiveChildSAs != 27 || stats.UnknownSPI != 28 ||
+		stats.OversizeDrops != 29 || stats.BufferDrops != 30 {
+		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }

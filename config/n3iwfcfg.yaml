@@ -27,19 +27,22 @@ configuration:
   # --- N2 Interfaces ---
   amfSCTPAddresses: # the IP list of N2 interfaces (SCTP) on AMF when using NGAP
     - ip:
-        - 127.0.0.18
+        - 192.168.1.2
       port: 38412
   nasTcpPort: 20000 # TCP port which the NAS listens on
 
   # --- Nwu Interfaces ---
-  ikeBindAddress: 172.16.2.100 # Nwu interface  IP address (IKE) on this N3IWF
+  ikeBindAddress: 192.168.2.2 # NWu address presented by the CP TAP
   ipSecTunnelAddress: 10.0.0.1 # Tunnel IP address of XFRM interface on this N3IWF
   ueIpAddressRange: 10.0.0.0/24 # IP address pool allocated to UE in IPSec tunnel
   xfrmInterfaceName: xfrmi # Prefix of XFRM interface name created by N3IWF
   xfrmInterfaceID: 1 # XFRM interface if_id for IPSec routing (Any value except to 0, default value is 7 if not defined)
 
   # --- N3 Interfaces ---
-  n3iwfGtpBindAddress: 127.0.0.33 # IP address of N3 interface (GTP) on this N3IWF
+  # Logical N3 carried only inside ONVM mbufs.
+  n3iwfGtpBindAddress: 192.168.4.1
+  userPlaneBackend: onvm
+  n3iwfDpControlSocket: /run/l25gc/n3iwf-dp.sock
 
   fqdn: n3iwf.free5gc.org # FQDN of this N3IWF
 
@@ -53,6 +56,18 @@ configuration:
     enable: true # true or false
     transFreq: 60s # frequency of transmission
     maxRetryTimes: 4 # the max number of DPD response of UE
+
+  # Optional extension: N3IWF-initiated RFC 7296 Child-SA rekey. Current
+  # upstream free5GC N3IWF does not schedule rekey, so this is disabled by
+  # default and is not required for the core DPDK CP/DP integration. Enable a
+  # short lifetime only for the procedure in onvm_test/NON3GPP_README.md.
+  childSARekey:
+    enable: false
+    lifetime: 30s
+    jitter: 2s
+    overlapDuration: 10s
+    retransmitTime: 2s
+    maxRetransmits: 3
 
 logger: # log output setting
   enable: true # true or false

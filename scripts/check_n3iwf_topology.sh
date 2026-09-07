@@ -51,9 +51,14 @@ source "$topology"
 
 for name in N3IWF_DP_SERVICE_ID N3IWF_DP_INSTANCE_ID UPF_U_SERVICE_ID \
     UPF_C_SERVICE_ID UPF_U_CORE_ID UPF_C_CORE_ID N3IWF_DP_CORE_ID \
-    ONVM_PORTMASK ONVM_ACCESS_PORT ONVM_N6_PORT; do
+    ONVM_PORTMASK ONVM_ACCESS_PORT ONVM_N6_PORT NWU_IP_MTU \
+    LOGICAL_N3_IP_MTU N6_IP_MTU N3IWF_MAX_INNER_IP_PACKET; do
     require_uint "$name"
 done
+
+[[ $NWU_IP_MTU == 1500 && $LOGICAL_N3_IP_MTU == 1500 &&
+   $N6_IP_MTU == 1500 && $N3IWF_MAX_INNER_IP_PACKET == 1410 ]] ||
+    fail "MTU contract differs from compiled n3iwf_dp_mtu.h profile"
 
 for name in N3IWF_DP_SERVICE_ID UPF_U_SERVICE_ID UPF_C_SERVICE_ID; do
     value=${!name}
@@ -130,3 +135,4 @@ echo "  services: n3iwf-dp=$N3IWF_DP_SERVICE_ID upf-u=$UPF_U_SERVICE_ID upf-c=$U
 echo "  physical: port $ONVM_ACCESS_PORT ($ONVM_ACCESS_PCI)=NWu/access, port $ONVM_N6_PORT ($ONVM_N6_PCI)=N6"
 echo "  logical N3: n3iwf=$N3IWF_N3_IPV4 upf=$UPF_N3_IPV4 (direct ONVM mbuf)"
 echo "  local NWu test: ESP outer n3iwf=$N3IWF_TEST_NWU_IPV4, GRE inner n3iwf=$N3IWF_IPSEC_INNER_IPV4 ue=$N3IWF_TEST_UE_IPSEC_INNER_IPV4"
+echo "  MTU: NWu=$NWU_IP_MTU N3=$LOGICAL_N3_IP_MTU N6=$N6_IP_MTU inner=$N3IWF_MAX_INNER_IP_PACKET"

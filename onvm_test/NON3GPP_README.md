@@ -48,37 +48,755 @@ UE (Test) ←─NWu/IKE/IPsec─→ N3IWF ←─N2/SCTP─→ AMF ←→ SMF ←
                          └─N3/GTP-U─→ UPF
 ```
 
-## Interface Roles
+## Three-NIC ONVM topology
 
-The `start_n3iwf.sh` script creates `n3iwf-ue` as a local dummy NWu test
-link:
+The physical and logical address spaces must remain distinct:
 
-- `192.168.127.2`: simulated UE outer/IKE address
-- `192.168.127.1`: N3IWF IKE bind address
-- `10.0.0.1`: N3IWF IPsec inner address on `xfrmi-default`
+| Plane | L25GC+ side | Peer |
+|---|---|---|
+| N2 | `enp7s0`, `192.168.1.2` | same-host N3IWF/AMF |
+| NWu | PCI `09:00.0`, DPDK port 1, MAC `12:3e:66:2e:1e:df` | UE `192.168.2.1` |
+| N3 | logical ONVM mbuf `192.168.4.1` → `192.168.4.2` | no Linux interface |
+| N6 | PCI `08:00.0`, DPDK port 0, UPF `192.168.3.1` | DN `192.168.3.2` |
 
-Do not use `n3iwf-ue` to ping AMF or DN addresses. It is not the N2, N3, or
-N6 interface, and forcing traffic through it with `ping -I n3iwf-ue` will send
-packets out the wrong side of the topology.
+`192.168.2.2` belongs on the `n3iwf-cp` TAP created by
+`scripts/run/run_n3iwf_dp.sh`, not on physical `enp9s0`. Likewise,
+`192.168.3.1` is owned by UPF-U and must not remain on `enp8s0`. Leave both
+physical mlx5 interfaces link-up but without IPv4 addresses before starting
+ONVM.
 
-For the default local L25GC+ layout, use these checks instead:
+### Component acceptance
 
 ```bash
-# N2 / AMF reachability
-ping -c 3 -I enp7s0 192.168.1.2
-
-# N3 / UPF-U reachability from the access side, if N3IWF runs on a UE/RAN node
-ping -c 3 -I <N3IWF_N3_INTERFACE> 192.168.2.2
-
-# N6 / DN reachability after PDU session setup, from the UE PDU address/interface
-ping -I <UE_PDU_INTERFACE_OR_ADDRESS> <DN_N6_IP>
+cd NFs/onvm-upf
+./env/bin/meson test -C build --print-errorlogs \
+  n3iwf-dp-codec n3iwf-dp-session n3iwf-dp-child-sa \
+  n3iwf-dp-control n3iwf-dp-punt n3iwf-dp-clear-path \
+  upf-u-n3iwf-route
 ```
 
-When using ONVM UPF-U for user-plane metrics, `n3iwfGtpBindAddress` in
-`config/n3iwfcfg_test.yaml` must be an N3 address reachable by the UPF's N3
-side. Use `127.0.0.33` only for loopback/free5GC-style tests. For a split
-UE/RAN + core topology, set it to the N3IWF/UE-RAN node's N3 IP, for example
-`192.168.2.1` when the UPF-U N3 IP is `192.168.2.2`.
+The codec and clear-path cases include exact QFI/RQI wire vectors, a chained
+GTP-U extension header, IPv4 and IPv6 inner payloads, and negative direction
+cases. They also verify that the UPF-U downlink PSC value is `0x09` for QFI 9
+and enforce the production MTU boundary described in
+`docs/high-performance-n3iwf/MTU_POLICY.md`. The UPF-U cases cover PSC value
+`0x09` with RQI clear and `0x49` with RQI set.
+
+### MTU boundary acceptance
+
+The current 1500-byte NWu/N3/N6 profile supports a maximum 1410-byte inner IP
+packet. Configure that MTU on the UE PDU interface and on the DN route before
+ordinary traffic; replace the placeholders with the live interface, VRF, and
+PDU address:
+
+```bash
+# UE
+sudo ip link set dev <UE_PDU_IF> mtu 1410
+ip link show dev <UE_PDU_IF>
+
+# DN: retain the existing next hop/interface but add the route MTU.
+sudo ip route replace 10.60.0.0/16 via 192.168.3.1 dev <DN_N6_IF> mtu 1410
+ip route get <UE_PDU_IP>
+```
+
+Record dataplane counters before and after each phase:
+
+```bash
+# CN/N3IWF
+sudo ./bin/n3iwf-dpctl -operation stats | tee /tmp/mtu-stats.before
+```
+
+For IPv4 ICMP, `ping -s` excludes the 20-byte IPv4 and 8-byte ICMP headers, so
+1381/1382/1383 exercise inner lengths 1409/1410/1411. Run both UE-to-DN and
+DN-to-UE directions with DF set:
+
+```bash
+# UE uplink: below and exact must pass; above must fail locally with EMSGSIZE.
+sudo ip vrf exec <UE_PDU_VRF> ping -c 3 -M do -s 1381 <DN_N6_IP>
+sudo ip vrf exec <UE_PDU_VRF> ping -c 3 -M do -s 1382 <DN_N6_IP>
+sudo ip vrf exec <UE_PDU_VRF> ping -c 1 -M do -s 1383 <DN_N6_IP>
+
+# DN downlink: below and exact must pass; above must fail locally with EMSGSIZE.
+ping -c 3 -M do -s 1381 <UE_PDU_IP>
+ping -c 3 -M do -s 1382 <UE_PDU_IP>
+ping -c 1 -M do -s 1383 <UE_PDU_IP>
+```
+
+The locally rejected PMTU cases should not increment `oversize_drops`. To
+exercise the dataplane's fail-closed above-boundary path, temporarily set only
+the sending endpoint's PDU/route MTU to 1500, send one 1383-byte DF ping, and
+restore 1410 immediately. The ping must receive no reply and
+`oversize_drops` must increase by exactly one; `uplink_packets` or
+`downlink_packets` must not increase for that rejected packet.
+
+Exercise TCP in both directions with the explicit IPv4 MSS 1370:
+
+```bash
+# DN
+iperf3 -s -B <DN_N6_IP> -p 5503
+
+# UE
+sudo ip vrf exec <UE_PDU_VRF> \
+  iperf3 -c <DN_N6_IP> -p 5503 -B <UE_PDU_IP> -M 1370 -t 15
+sudo ip vrf exec <UE_PDU_VRF> \
+  iperf3 -c <DN_N6_IP> -p 5503 -B <UE_PDU_IP> -M 1370 -R -t 15
+```
+
+Retain the commands, outputs, before/after stats, and simultaneous NWu and N6
+captures. Accepted ICMP/TCP traffic must appear as ESP on NWu and clear inner
+traffic on N6. `malformed_packets`, `buffer_drops`, `fragment_drops`, and the
+identity/crypto error counters must not change. Component tests provide the
+byte-for-byte and synthetic fragmented/zero-headroom checks that cannot be
+reliably generated by the normal host stacks.
+
+### Live RQI semantic acceptance
+
+Use a policy/session whose PFCP QER has Reflective QoS set, and retain the
+UPF-C log line `QER Reflective QoS: 1` with the test artifacts. Generate
+identifiable downlink traffic for that QFI. For the production ESP path,
+capture GRE after inbound XFRM processing on the UE, not on the physical NWu
+interface (where it must remain encrypted):
+
+```bash
+ip -d link show type xfrm
+sudo timeout 30 tcpdump -ni <UE_XFRM_IF> -w rqi-set-gre.pcap 'ip proto 47'
+sudo timeout 30 tcpdump -eni <UE_ACCESS_IF> -w rqi-set-nwu.pcap \
+  'ip proto 50 or udp port 4500 or ip proto 47'
+tshark -r rqi-set-gre.pcap -Y gre -T fields -e gre.key
+```
+
+For QFI 9, the RQI-set GRE key is `0x09000080`; with the otherwise identical
+QER and RQI clear it is `0x09000000`. In general, decode QFI as
+`(key >> 24) & 0x3f` and RQI as `(key & 0x80) != 0`; the two values are
+independent. Repeat the same policy and traffic with
+`userPlaneBackend: linux` and `userPlaneBackend: onvm`, retaining both pcaps
+and the exact revisions/configurations. Both backends must produce the same
+keys for RQI clear and set. The physical NWu capture must contain ESP and no
+clear GRE in software-IPsec mode, and the N3IWF-DP `malformed_packets`,
+`unknown_teid`, and `unknown_qfi` counters must not increase.
+
+An uplink packet with GRE key RQI set is invalid for this supported profile; a
+component negative test requires it to be dropped and increment
+`malformed_packets`. Do not use an uplink injection to demonstrate downlink
+RQI preservation.
+
+### Physical clear-GRE round-trip acceptance
+
+This test deliberately bypasses user-plane ESP only after a real N3IWUE has
+completed registration and PDU-session setup. The real control plane therefore
+installs matching PFCP PDR/FAR state in UPF and matching Child-SA/session state
+in N3IWF-DP. IKE, EAP-5G, NAS and N2 remain standards based.
+
+On the L25GC+ host, remove duplicate kernel addresses, then start the manager,
+UPF-U, UPF-C, the other core NFs, N3IWF-DP in clear mode, and N3IWF CP:
+
+```bash
+sudo ip address del 192.168.2.2/24 dev enp9s0 2>/dev/null || true
+sudo ip address del 192.168.3.1/24 dev enp8s0 2>/dev/null || true
+sudo ip link set enp9s0 up
+sudo ip link set enp8s0 up
+
+sudo ./scripts/run/run_onvm_mgr.sh
+# separate terminals:
+./scripts/run/run_upf_u.sh 1 -f "$PWD/NFs/onvm-upf/5gc/upf_u/config/upf_u.yaml"
+./scripts/run/run_upf_c.sh 2 "$PWD/NFs/onvm-upf/5gc/upf_c/config/upfcfg.yaml"
+N3IWF_DP_CLEAR_TEST=1 ./scripts/run/run_n3iwf_dp.sh
+sudo ./bin/n3iwf -c config/n3iwfcfg.yaml
+```
+
+The mlx5 interfaces remain kernel-visible and UP. They do not retain the NWu
+or N6 addresses because those addresses are owned by the explicit TAP/DPDK
+paths. `run_n3iwf_dp.sh` assigns the physical access-port MAC to `n3iwf-cp`,
+so Ethernet frames punted from the NIC are accepted by the kernel on the TAP.
+It fails startup if the NWu address is still duplicated on `enp9s0`.
+
+Start the remaining core NFs using the normal L25GC+ procedure. On the DN
+peer, configure its dedicated N6 NIC and start the echo endpoint:
+
+```bash
+sudo ip address replace 192.168.3.2/24 dev <DN_IF>
+sudo ip link set <DN_IF> up
+sudo ip route replace 10.60.0.0/16 via 192.168.3.1 dev <DN_IF>
+sudo arping -I <DN_IF> -c 3 192.168.3.1
+python3 n3iwf_clear_dn_echo.py --bind 192.168.3.2
+```
+
+Treat the `arping` result as a mandatory N6 readiness gate: it must receive a
+reply from the UPF-U port MAC before clear-GRE injection. Besides proving the
+physical port mapping, the DN ARP request teaches UPF-U the DN MAC. UPF-U does
+not queue a user packet that triggers unresolved-neighbor discovery, so a test
+started before this gate can lose its first packet. Keep a DN-side capture
+running during acceptance because kernel `tcpdump` on the bifurcated L25GC+
+mlx5 interface does not observe DPDK traffic:
+
+```bash
+sudo tcpdump -eni <DN_IF> 'arp or udp port 9000'
+```
+
+On the UE peer, configure its access NIC as `192.168.2.1/24`, start N3IWUE,
+and wait for PDU-session setup. N3IWF logs the installed contract, including
+QFI and GRE NWu addresses. Obtain the current UE NWu address from the latest
+N3IWF `Programmed ONVM Child SA ... NWu=<UE>-><N3IWF>` log; do not assume it
+will always be `10.0.0.2`, because a later registration may receive another
+address. The established NAS TCP connection (`ss -tnp | grep ':20000'`) is a
+second way to confirm this address. Obtain the UE PDU address from N3IWUE or
+the SMF `Allocated PDUAdress[...]` log. Then run:
+
+```bash
+sudo python3 n3iwf_clear_gre.py \
+  --interface <UE_IF> \
+  --n3iwf-mac 12:3e:66:2e:1e:df \
+  --ue-nwu <CURRENT_UE_NWU_IP> --n3iwf-nwu 10.0.0.1 \
+  --ue-pdu <UE_PDU_IP> --dn-ip 192.168.3.2 \
+  --qfi <QFI> --count 5
+```
+
+Success requires five DN receives, five GRE replies at the generator, and
+matching counter increases:
+
+```bash
+sudo ./bin/n3iwf-dpctl -operation stats
+```
+
+`uplink_packets`, `downlink_packets`, and `access_mac_learns` must increase;
+`unknown_teid`, `unknown_qfi`, `malformed_packets`, and
+`access_neighbor_drops` must remain unchanged. Before injection,
+`active_sessions` must be at least one and `active_child_sas` must include the
+PDU-session Child SA; otherwise repeat the live PDU-session setup after the
+latest N3IWF-DP restart. This proves physical NWu →
+N3IWF-DP → ONVM ring → UPF-U → physical N6 → DN and the reverse path without
+a kernel user-plane crossing. Clear mode is never a production mode.
+
+If `unknown_qfi` increases while `uplink_packets` remains unchanged, verify
+both parts of the lookup key: `--ue-nwu` must equal the current programmed UE
+NWu address and `--qfi` must be one of the QFIs printed in that same log entry.
+
+### DPDK software-IPsec phase
+
+The clear-path acceptance above is complete. Software-IPsec is a separate,
+fail-closed runtime mode that replaces only the NWu user-plane boundary:
+
+```text
+uplink:   Ethernet/IPv4/ESP -> authenticate + anti-replay + decrypt -> GRE/QFI
+          -> the accepted clear-path GTP-U/ONVM-UPF pipeline
+downlink: accepted GTP-U/TEID/QFI -> GRE -> ESP encrypt + authenticate
+          -> physical access port
+```
+
+The first implemented suite is IPv4 ESP tunnel mode with IKEv2 transform 12
+(AES-CBC with 128-bit or 256-bit keys), transform 2 (HMAC-SHA1-96), and a
+non-ESN replay window. Both directions must use the same negotiated AES key
+size. AES-CBC-192 is deliberately outside this initial profile.
+Unsupported transforms, NAT-T, ESN and IPv6 outer transport are rejected; the
+NF never falls back to clear traffic. The manager and NF must both receive the
+mode flag because the primary DPDK process creates the software cryptodev:
+
+Secure-path direction follows ONVM packet ownership: `meta->src == 0` means
+physical NWu ingress, while a non-zero source identifies logical N3 traffic
+handed off by another NF. The mbuf `port` field is retained as an ingress
+annotation and is not used to infer direction after ONVM ring handoffs. The
+configured access port remains the explicit destination for NWu transmission.
+DPDK tunnel-mode IPsec exposes L3-only packets after decapsulation and consumes
+the original clear-frame L2 header during encapsulation. N3IWF-DP therefore
+preserves and restores the access Ethernet header around both transformations;
+the authenticated inbound source MAC is then available to the existing UE MAC
+learning logic, while outbound retains the session-selected destination MAC.
+After DPDK updates an IPv4 tunnel header, N3IWF-DP calculates its header
+checksum in software; these packets do not rely on NIC checksum offload.
+
+```bash
+N3IWF_DP_SOFTWARE_IPSEC=1 sudo -E ./scripts/run/run_onvm_mgr.sh
+
+# after the manager and the other NFs are running
+N3IWF_DP_SOFTWARE_IPSEC=1 \
+N3IWF_DP_KERNEL_SIGNALLING_ESP=1 \
+  ./scripts/run/run_n3iwf_dp.sh
+```
+
+`run_onvm_mgr.sh` requires the DPDK `librte_crypto_ipsec_mb` PMD and creates
+`crypto_aesni_mb0`. DPDK 24.11 requires Intel IPSec-MB 1.4 or newer. Ubuntu
+22.04's `libipsec-mb-dev` 1.2 package is too old; install a compatible library
+and rebuild/install DPDK before secure-mode acceptance. Startup fails with a
+clear error when this capability is absent. N3IWF-DP configures and starts one
+cryptodev queue pair before creating CPU-crypto sessions. This queue pair is
+required even for synchronous processing because the IPSec-MB PMD stores its
+per-process multi-buffer manager there.
+
+For the first live acceptance, perform a fresh N3IWUE registration so the
+Child-SA and PDU-session contracts are installed after N3IWF-DP starts. Send
+normal UE PDU traffic through N3IWUE/XFRM; do not use
+`n3iwf_clear_gre.py`, because clear GRE must be dropped in this mode. Capture
+the physical access link and require ESP rather than GRE:
+
+```bash
+sudo tcpdump -eni <UE_IF> 'esp or udp port 4500 or ip proto 47'
+sudo ./bin/n3iwf-dpctl -operation stats
+```
+
+Acceptance requires bidirectional DN traffic, increasing uplink/downlink
+counters, ESP on the physical NWu link, no physical clear GRE, and unchanged
+`crypto_failures`, `replay_drops`, `unknown_spi`, `unknown_teid`, `unknown_qfi`,
+`oversize_drops`, and `buffer_drops`. The temporary
+`N3IWF_DP_KERNEL_SIGNALLING_ESP=1` boundary keeps
+the signalling Child SA in Linux while the PDU-session Child SA is processed
+by DPDK. Removing that signalling exception, plus NAT-T and additional
+Release 18 algorithms, remains subsequent work.
+
+If `active_sessions=1`, `active_child_sas=1`, and `unknown_spi=0`, but each
+user packet increments `crypto_failures`, SPI lookup and CP/DP programming have
+succeeded; the failure is inside ESP preparation or authentication. The NF
+prints at most eight non-secret diagnostics distinguishing these stages. After
+restarting the rebuilt NF and repeating a single UE ping, inspect the N3IWF-DP
+terminal for one of:
+
+```text
+N3IWF-DP IPsec runtime SA creation failed: ...
+N3IWF-DP IPsec inbound prepare failed: ...
+N3IWF-DP IPsec inbound authentication/post-process failed: ...
+```
+
+The runtime-SA message indicates cryptodev session or `rte_ipsec_sa`
+initialization failed before processing the packet. A prepare message with
+`errno=22 (Invalid argument)` is an anti-replay rejection: the ESP sequence
+number is duplicated or older than the current window. Other prepare errors
+indicate malformed ESP length or insufficient mbuf space. The
+authentication/post-process message normally indicates an integrity/key-direction mismatch;
+`RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED` in `ol_flags` confirms cryptographic
+verification failure. These diagnostics include SPI, lengths and error flags
+only and never print negotiated keys.
+
+### Two-UE software-IPsec acceptance
+
+Use this procedure for the immediate multiple-UE acceptance gate. It requires
+two real N3IWUE instances on the physical NWu Layer-2 network. Do not substitute
+two PDU sessions belonging to one UE, and do not use clear-GRE mode: an inbound
+ESP SPI is the production identity used to select the UE/session in O(1).
+
+Keep `childSARekey.enable: false` for this test. Selective release and
+overlapping rekey are separate tests. Before starting, give the two UE
+instances:
+
+- different provisioned SUPIs and matching, independently provisioned keys;
+- different physical NWu IPv4 addresses (for example `192.168.2.1` and
+  `192.168.2.3`) on the same subnet as N3IWF `192.168.2.2`;
+- different access-interface MAC addresses; and
+- the same DNN and S-NSSAI so both sessions use the same tested UPF path.
+
+The N3IWF must allocate different inner NWu addresses. The SMF must allocate
+different UE PDU addresses and independent UL/DL TEIDs. Record the QFI assigned
+to each session; equality is useful identity-stress coverage when the core
+assigns the same QFI, but do not rewrite a negotiated QFI in the dataplane.
+
+#### 1. Save the exact software and topology inputs
+
+On the L25GC+ host, create a result directory and capture the dirty working
+tree as well as the checked-out revisions:
+
+```bash
+cd /home/ubuntu/L25GC-plus
+result_dir="results/n3iwf-two-ue-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$result_dir"
+git rev-parse HEAD >"$result_dir/root.revision"
+git -C NFs/n3iwf rev-parse HEAD >"$result_dir/n3iwf.revision"
+git -C NFs/onvm-upf rev-parse HEAD >"$result_dir/onvm-upf.revision"
+git status --short --branch >"$result_dir/root.status"
+git -C NFs/n3iwf status --short --branch >"$result_dir/n3iwf.status"
+git -C NFs/onvm-upf status --short --branch >"$result_dir/onvm-upf.status"
+cp config/n3iwf_dp_topology.env config/n3iwfcfg.yaml "$result_dir/"
+```
+
+Reuse the same `result_dir` value in every later L25GC+ host shell. Commands on
+the UE and DN hosts write local files; copy those files into this directory
+after the run.
+
+Also record both N3IWUE revisions and their non-secret configuration. Never put
+subscriber keys, Child-SA keys, or a key-bearing control-socket capture in the
+result directory.
+
+#### 2. Build and run the component gate
+
+Build from the same working trees that will be deployed:
+
+```bash
+cd /home/ubuntu/L25GC-plus/NFs/onvm-upf
+./env/bin/meson compile -C build l25gc_n3iwf_dp \
+  n3iwf_dp_session_test n3iwf_dp_child_sa_test \
+  n3iwf_dp_control_test n3iwf_dp_clear_test
+./env/bin/meson test -C build --print-errorlogs \
+  n3iwf-dp-session n3iwf-dp-child-sa n3iwf-dp-control \
+  n3iwf-dp-clear-path
+
+cd /home/ubuntu/L25GC-plus/NFs/n3iwf
+GOCACHE=/tmp/l25gc-n3iwf-gocache \
+  go test ./internal/userplane ./internal/ike ./internal/ngap ./pkg/factory
+go build -o ../../bin/n3iwf.next ./cmd
+
+cd /home/ubuntu/L25GC-plus/NFs/n3iwf-dp-client
+GOCACHE=/tmp/l25gc-dp-client-gocache go test ./...
+go build -o ../../bin/n3iwf-dpctl ./cmd/n3iwf-dpctl
+```
+
+Before the live run, verify that the control-only Child-SA scan has no caller
+in the packet-processing translation units:
+
+```bash
+cd /home/ubuntu/L25GC-plus
+rg -n 'n3iwf_dp_child_sa_find_latest_for_control' \
+  NFs/onvm-upf/5gc/n3iwf_dp
+```
+
+Expected references are the declaration/definition, component tests, and
+`n3iwf_dp_control.c`. A reference from `n3iwf_dp_ipsec.c`,
+`n3iwf_dp_downlink.c`, or `n3iwf_dp_clear.c` fails the gate.
+
+#### 3. Prepare the physical peers
+
+Connect N3IWF, UE1, and UE2 through the same NWu switch or bridge. On the UE
+hosts, configure distinct outer addresses and verify distinct MAC addresses:
+
+```bash
+# UE1
+sudo ip address replace 192.168.2.1/24 dev <UE1_ACCESS_IF>
+sudo ip link set <UE1_ACCESS_IF> up
+ip -br link show <UE1_ACCESS_IF>
+
+# UE2
+sudo ip address replace 192.168.2.3/24 dev <UE2_ACCESS_IF>
+sudo ip link set <UE2_ACCESS_IF> up
+ip -br link show <UE2_ACCESS_IF>
+```
+
+Configure each N3IWUE to use N3IWF `192.168.2.2` and its own outer address,
+SUPI, and credentials. Provision both SUPIs in the core before registration.
+Confirm that each subscriber is allowed to request the configured DNN and
+S-NSSAI.
+
+On the DN, prepare N6, the return route for the whole PDU pool, neighbor
+resolution, and two concurrent iperf3 listeners:
+
+```bash
+sudo ip address replace 192.168.3.2/24 dev <DN_IF>
+sudo ip link set <DN_IF> up
+sudo ip route replace 10.60.0.0/16 via 192.168.3.1 dev <DN_IF>
+sudo arping -I <DN_IF> -c 3 192.168.3.1
+iperf3 -s -B 192.168.3.2 -p 5201
+# separate DN terminal
+iperf3 -s -B 192.168.3.2 -p 5202
+```
+
+Do not continue unless `arping` receives a reply from the UPF-U N6 MAC.
+
+#### 4. Start a clean secure dataplane and core
+
+Stop old ONVM secondaries and the old manager using the normal deployment
+cleanup procedure. Then start a fresh stack. On the L25GC+ host:
+
+```bash
+cd /home/ubuntu/L25GC-plus
+sudo ip address del 192.168.2.2/24 dev enp9s0 2>/dev/null || true
+sudo ip address del 192.168.3.1/24 dev enp8s0 2>/dev/null || true
+sudo ip link set enp9s0 up
+sudo ip link set enp8s0 up
+./scripts/check_n3iwf_topology.sh
+
+N3IWF_DP_SOFTWARE_IPSEC=1 sudo -E ./scripts/run/run_onvm_mgr.sh
+# separate terminals, after the manager is ready:
+./scripts/run/run_upf_u.sh 1 -f "$PWD/NFs/onvm-upf/5gc/upf_u/config/upf_u.yaml"
+./scripts/run/run_upf_c.sh 2 "$PWD/NFs/onvm-upf/5gc/upf_c/config/upfcfg.yaml"
+N3IWF_DP_SOFTWARE_IPSEC=1 \
+N3IWF_DP_KERNEL_SIGNALLING_ESP=1 \
+  ./scripts/run/run_n3iwf_dp.sh
+sudo ./bin/n3iwf.next -c config/n3iwfcfg.yaml
+```
+
+Start all other core NFs using the normal L25GC+ order. Save each process log.
+With no UE registered, record a clean dataplane baseline:
+
+```bash
+sudo ./bin/n3iwf-dpctl -operation stats | tee "$result_dir/stats.before"
+```
+
+`active_sessions` and `active_child_sas` must both be zero. If they are not,
+the dataplane was not restarted cleanly.
+
+#### 5. Register UE1, then UE2
+
+Start UE1 and wait until registration and its PDU-session setup finish. Send
+one ping from its PDU interface to `192.168.3.2`. Then start UE2, wait for its
+PDU session, and send the same ping. Sequential setup makes failures and log
+identity easier to attribute; traffic will be concurrent in the next step.
+
+From the two N3IWF `Programmed ONVM Child SA ...` records and the UE/SMF logs,
+create an identity table containing:
+
+| Identity | UE1 | UE2 |
+|---|---|---|
+| SUPI | `<UE1_SUPI>` | `<UE2_SUPI>` |
+| access MAC | `<UE1_MAC>` | `<UE2_MAC>` |
+| outer NWu IPv4 | `192.168.2.1` | `192.168.2.3` |
+| inner NWu IPv4 | `<UE1_NWU>` | `<UE2_NWU>` |
+| UE PDU IPv4 | `<UE1_PDU>` | `<UE2_PDU>` |
+| PDU-session ID | `<UE1_PSI>` | `<UE2_PSI>` |
+| QFI | `<UE1_QFI>` | `<UE2_QFI>` |
+| UL/DL TEID | `<UE1_TEIDS>` | `<UE2_TEIDS>` |
+| inbound/outbound SPI | `<UE1_SPIS>` | `<UE2_SPIS>` |
+
+Use `ip -s xfrm state` on each UE to record its SPI pair. The inner NWu
+addresses, PDU addresses, TEID pairs, and SPI pairs must differ. After both
+initial pings:
+
+```bash
+sudo ./bin/n3iwf-dpctl -operation stats | tee "$result_dir/stats.registered"
+```
+
+Require `active_sessions=2`, `active_child_sas=2`, and exactly two initial
+`access_mac_learns` from a clean start. `access_mac_changes` and all error/drop
+counters must remain zero. If rekey was accidentally enabled, an overlap can
+temporarily raise `active_child_sas`; restart with rekey disabled.
+
+#### 6. Capture both identities and run simultaneous bidirectional traffic
+
+Start captures before load. Capture on the DN and on each UE's decrypted PDU
+interface. Also capture the physical NWu interface on each UE to prove that the
+wire traffic is ESP and that downlink Ethernet uses that UE's MAC:
+
+```bash
+# DN
+sudo timeout 75 tcpdump -eni <DN_IF> -w dn.pcap \
+  'host <UE1_PDU> or host <UE2_PDU>'
+
+# UE1
+sudo timeout 75 tcpdump -ni <UE1_PDU_IF> -w ue1-pdu.pcap \
+  'host 192.168.3.2 or host <UE2_PDU>'
+sudo timeout 75 tcpdump -eni <UE1_ACCESS_IF> -w ue1-nwu.pcap \
+  'ip proto 50 or udp port 4500 or ip proto 47'
+
+# UE2
+sudo timeout 75 tcpdump -ni <UE2_PDU_IF> -w ue2-pdu.pcap \
+  'host 192.168.3.2 or host <UE1_PDU>'
+sudo timeout 75 tcpdump -eni <UE2_ACCESS_IF> -w ue2-nwu.pcap \
+  'ip proto 50 or udp port 4500 or ip proto 47'
+```
+
+Run the two clients at the same time for at least 60 seconds. Use separate DN
+ports so the flows and captures remain attributable:
+
+```bash
+# UE1
+sudo ip vrf exec <UE1_PDU_VRF> \
+  iperf3 -c 192.168.3.2 -p 5201 -B <UE1_PDU> --bidir -t 60 -i 1
+
+# UE2, start immediately in a second terminal
+sudo ip vrf exec <UE2_PDU_VRF> \
+  iperf3 -c 192.168.3.2 -p 5202 -B <UE2_PDU> --bidir -t 60 -i 1
+```
+
+If the installed iperf3 lacks `--bidir`, run simultaneous 60-second uplink
+clients first and repeat both with `-R`; do not count that fallback as strict
+simultaneous bidirectional acceptance.
+
+#### 7. Prove isolation and evaluate counters
+
+Save final counters before stopping any UE:
+
+```bash
+sudo ./bin/n3iwf-dpctl -operation stats | tee "$result_dir/stats.after"
+```
+
+Both `uplink_packets` and `downlink_packets` must increase. These counters must
+not increase from the registered snapshot: `unknown_teid`, `unknown_qfi`,
+`unknown_spi`, `malformed_packets`, `replay_drops`, `crypto_failures`,
+`oversize_drops`, `buffer_drops`, `fragment_drops`, `stale_updates`,
+`control_punt_drops`,
+`access_mac_changes`, and `access_neighbor_drops`. `active_sessions=2`,
+`active_child_sas=2`, and `access_mac_learns=2` must remain stable.
+
+Read the captures and require zero cross-UE inner packets:
+
+```bash
+# Run on UE1 and UE2 respectively.
+tcpdump -nr ue1-pdu.pcap 'host <UE2_PDU>' | wc -l
+tcpdump -nr ue2-pdu.pcap 'host <UE1_PDU>' | wc -l
+```
+
+Both results must be `0`. Each PDU capture must contain its own iperf3 port in
+both directions. Each NWu capture must contain ESP for that UE, no clear GRE,
+and downlink Ethernet frames addressed to that UE's access MAC. The DN capture
+must contain both distinct UE PDU addresses on their assigned ports.
+
+The acceptance gate passes only when both registrations and sessions stay up,
+both bidirectional flows complete concurrently, every identity field is
+independent (with same-QFI coverage when assigned), the cross-UE capture counts
+are zero, the error/drop deltas are zero, and the static fast-path scan check
+passes. Keep the raw logs, pcaps, iperf3 output, identity table, and counter
+snapshots together. Do not perform selective release as part of this gate.
+
+After functional acceptance, use
+`onvm_test/multi_ue_performance/README.md` for the controlled one-versus-two UE
+throughput, fairness, CPU, and counter-delta checkpoint. Do not use an
+isolation run with incidental throughput as the formal performance record.
+
+### Optional Child-SA rekey overlap
+
+Current upstream free5GC N3IWF does not schedule automatic Child-SA rekey.
+L25GC+ keeps this verified RFC 7296 lifecycle as an extended feature, disabled
+by default. It is not required for the normal CP/DP integration acceptance
+sequence documented above; enable it only when explicitly testing this
+extension.
+
+The CP/DP lifecycle supports make-before-break Child-SA replacement for one
+UE/PDU session:
+
+1. Upsert the replacement Child SA with a generation newer than every earlier
+   Child-SA command for that UE/PDU session.
+2. Both inbound SPIs remain valid, allowing packets already protected with the
+   old SA to arrive during the overlap window.
+3. The control update switches the PDU session's stable active-outbound-SA
+   slot immediately to the replacement. The packet path follows that slot in
+   O(1) and never scans for the greatest generation.
+4. An explicit Child-SA delete retires the old SPI, securely erases its keys,
+   and leaves the PDU-session contract and replacement SA active.
+
+The Child-SA table carries a separate session command watermark. Deleting the
+old SA advances that watermark on the surviving SA without changing its crypto
+configuration generation, so runtime cryptodev sessions are not rebuilt and a
+delayed upsert/delete is rejected as stale. An inbound SPI also cannot be
+reassigned to another UE/PDU identity.
+
+Child-SA storage, inbound lookup and outbound selection are separate. An
+open-addressed index maps each inbound ESP SPI directly to its stable Child-SA
+slot, so both old and new SPIs remain O(1) lookups during overlap. Each PDU
+session stores the active outbound slot plus its installation generation. The
+generation check makes slot reuse fail closed, while the single-lcore ONVM
+execution model makes control updates and packet callbacks serial without a
+global fast-path lock. Runtime cryptodev state uses the same slot and performs
+full-table retirement reconciliation only when the Child-SA table revision
+changes.
+
+Run the deterministic overlap and control-contract tests after rebuilding:
+
+```bash
+cd NFs/onvm-upf
+ninja -C build
+./build/5gc/n3iwf_dp/n3iwf_dp_child_sa_test
+./build/5gc/n3iwf_dp/n3iwf_dp_session_test
+./build/5gc/n3iwf_dp/n3iwf_dp_control_test
+
+cd ../n3iwf
+GOCACHE=/tmp/l25gc-n3iwf-gocache \
+  go test ./internal/ike \
+  -run 'Test(UpsertPDUSessionUserPlane|RekeyOverlapUserPlaneLifecycle|BuildAndValidateChildSARekey|HandleChildSARekeyResponseInstallsOverlap|RetransmitRekeyRequestUsesStoredPacket|RekeyTimeoutClearsPendingExchange|SimultaneousRekeyReturnsTemporaryFailure)$'
+```
+
+The C tests verify two active SPIs, direct active-SA downlink selection,
+session isolation, stale-command rejection, old-SA retirement, and survival of
+the replacement. The Go test
+verifies the CP sequence `old upsert -> replacement upsert -> old delete` uses
+strictly increasing generations and never issues a PDU-session delete during
+retirement.
+
+The N3IWF now initiates the RFC 7296 Child-SA rekey exchange. It offers the
+existing algorithms and traffic selectors in `CREATE_CHILD_SA`, identifies the
+old inbound SPI with `REKEY_SA`, derives fresh keys from both new nonces, and
+programs the replacement through the versioned ONVM contract. Downlink selects
+the newest generation immediately. After `overlapDuration`, N3IWF sends an ESP
+Delete for its old inbound SPI, waits for the authenticated acknowledgement,
+and only then removes that old dataplane SA. Both CREATE_CHILD_SA and Delete
+requests retain and retransmit the exact encrypted datagram with exponential
+backoff. Exhausting the configured retries treats the IKE SA as unreachable and
+initiates UE-context release instead of silently leaving ambiguous IKE message
+IDs or stale keys. The default policy is disabled so an upgrade cannot
+unexpectedly change a running deployment.
+
+N3IWF is the single rekey owner for this deployment. Peer-initiated rekey while
+the local exchange is active receives authenticated `TEMPORARY_FAILURE`, which
+resolves simultaneous-rekey collision without creating competing replacement
+SAs. Other peer-initiated additional/rekey requests receive
+`NO_ADDITIONAL_SAS`. Use a N3IWF lifetime shorter than the UE's Child-SA
+lifetime. Each scheduled lifetime also receives uniformly distributed positive
+`jitter` (default five percent when omitted), reducing synchronized rekeys
+across UEs as recommended by RFC 7296.
+
+For a visible live test, temporarily use a short policy in
+`config/n3iwfcfg.yaml`:
+
+```yaml
+childSARekey:
+  enable: true
+  lifetime: 30s
+  jitter: 2s
+  overlapDuration: 10s
+  retransmitTime: 2s
+  maxRetransmits: 3
+```
+
+The tested N3IWUE must distinguish IKE-SA deletion from ESP Child-SA deletion.
+For an ESP Delete it matches the peer-owned SPI to the old Child SA, removes
+only that SA's XFRM state, returns the paired local SPI, and leaves registration
+and the PDU session running. Treating every IKE `INFORMATIONAL` Delete as
+whole-UE deregistration is incorrect and causes shutdown at the end of the
+overlap.
+
+Rebuild and restart the N3IWF CP, then perform a fresh N3IWUE registration and
+PDU-session setup. Keep DN traffic running for at least two lifetimes:
+
+```bash
+# UE, using the established PDU-session VRF and address
+sudo ip vrf exec vrf-pdu-1 \
+  ping -c 120 -i 0.5 -I <UE_PDU_IP> <DN_IP>
+
+# L25GC+ host, in another terminal
+watch -n 0.5 'sudo ./bin/n3iwf-dpctl -operation stats'
+
+# Access-side observation: packets must remain ESP
+sudo tcpdump -eni <UE_ACCESS_IF> -vv 'ip proto 50 or udp port 4500'
+```
+
+The N3IWF log must show these messages in order (SPIs vary):
+
+```text
+Sent Child-SA rekey request: old inbound SPI=... new inbound SPI=...
+Installed rekey overlap for PDU Session[...]: old SPI=... new SPI=...
+Sent old Child-SA delete: PDU Session[...] retired SPI=... active SPI=...
+Completed Child-SA rekey for PDU Session[...]: retired SPI=... active SPI=...
+```
+
+During each ten-second overlap, `active_child_sas` must change from 1 to 2 and
+then return to 1. The ping must have no rekey-correlated loss, the PDU session
+must remain active, and `unknown_spi`, `replay_drops`, `crypto_failures`,
+`unknown_teid`, `unknown_qfi`, `oversize_drops`, and `buffer_drops` must not
+increase. A later cycle must repeat
+with the previously new SPI becoming the old SPI; this verifies that scheduling
+continues beyond one replacement. N3IWUE must log `Retired ESP Child SA` and
+must not log `Deregistration complete event received` for this ESP Delete.
+Restore the production lifetime after the test.
+
+The 2026-09-01 live checkpoint used the short policy above and a 60-second
+reverse TCP stream from `192.168.3.2` to UE PDU address `10.60.0.1`. It
+transferred 8.06 GBytes at 1.15 Gbit/s with four retransmissions. Every
+one-second interval stayed between approximately 1.14 and 1.16 Gbit/s, with no
+visible interruption or throughput collapse during rekey and old-SA
+retirement:
+
+```bash
+sudo ip vrf exec vrf-pdu-1 \
+  iperf3 -c 192.168.3.2 -p 5201 -B 10.60.0.1 -t 60 -R
+```
+
+For a non-NAT-T retransmission check, block IKE UDP/500 on the UE briefly just
+before the 30-second lifetime, then always remove the rule:
+
+```bash
+sudo iptables -I INPUT 1 -i <UE_ACCESS_IF> -p udp --sport 500 --dport 500 -j DROP
+sleep 5
+sudo iptables -D INPUT -i <UE_ACCESS_IF> -p udp --sport 500 --dport 500 -j DROP
+```
+
+The N3IWF log must show `Retransmitted Child-SA rekey request`, traffic should
+continue on the already active ESP SA, and the exchange should complete after
+the rule is removed. Do not use this UDP/500 rule for NAT-T, where IKE and ESP
+share UDP/4500. The deterministic Go test covers retry exhaustion without
+disrupting a live UE.
 
 For iperf3, run the server on the DN address and bind the client to the UE PDU
 address after the PDU session is established:
@@ -90,6 +808,54 @@ iperf3 -s -B <DN_N6_IP>
 # UE/N3IWF side, after PDU session setup
 iperf3 -c <DN_N6_IP> -B <UE_PDU_IP>
 ```
+
+### Software-IPsec TCP throughput checkpoint (2026-08-17)
+
+The first sustained bidirectional TCP checkpoint was recorded after fixing
+UPF-U GTP-U outer-header initialization. `rte_pktmbuf_prepend()` can expose
+previously used mbuf headroom, while `onvm_pkt_fill_ipv4()` does not initialize
+every IPv4 field. UPF-U now clears the newly prepended outer IPv4 header before
+filling it. This prevents stale `fragment_offset` bits from causing N3IWF-DP
+to classify valid downlink packets, including TCP ACKs, as fragments.
+
+The measured path was N3IWUE/XFRM -> physical ESP NWu -> N3IWF-DP software
+IPsec -> logical ONVM N3 -> UPF-U -> physical N6 -> DN, and the reverse path.
+The UE PDU address was `10.60.0.1`, the DN test address was `1.1.1.1`, and each
+run used one TCP stream for 15 seconds.
+
+| Direction | Test condition | Transfer | Throughput | Retransmits |
+|---|---|---:|---:|---:|
+| Uplink, UE -> DN | `--fq-rate 100M`, MSS 1100 | 179 MBytes | 100 Mbit/s sender, 99.7 Mbit/s receiver | 0 |
+| Uplink, UE -> DN | Unpaced single TCP stream | 2.11 GBytes | 1.21 Gbit/s sender and receiver | 0 |
+| Downlink, DN -> UE | Reverse, unpaced single TCP stream | 2.08 GBytes | 1.19 Gbit/s sender and receiver | 1 |
+
+Unlike the pre-fix behavior, all three runs continued transferring for the
+full duration; the unpaced uplink and downlink runs did not collapse after the
+first few seconds. Reproduce the checkpoint with:
+
+```bash
+# DN
+iperf3 -s -B 1.1.1.1 -p 5201
+
+# Sustained paced uplink correctness check
+sudo ip vrf exec vrf-pdu-1 taskset -c 1 \
+  iperf3 -c 1.1.1.1 -p 5201 -B 10.60.0.1 \
+  -M 1100 --fq-rate 100M -t 15
+
+# Unpaced single-stream uplink
+sudo ip vrf exec vrf-pdu-1 \
+  iperf3 -c 1.1.1.1 -p 5201 -B 10.60.0.1 -t 15
+
+# Unpaced single-stream downlink
+sudo ip vrf exec vrf-pdu-1 \
+  iperf3 -c 1.1.1.1 -p 5201 -B 10.60.0.1 -t 15 -R
+```
+
+This is an MVP throughput checkpoint, not the final performance acceptance.
+It does not yet establish the kernel-N3IWF baseline, the required 2x speedup,
+p99 latency, CPU efficiency, multi-UE scaling, or the maximum loss-free packet
+rate. Future benchmark records must include those values plus before/after
+N3IWF-DP error counters.
 
 ## Technical Details
 

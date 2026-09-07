@@ -1,0 +1,19 @@
+# backend-conformance-v1
+# case_id	area	externally_observable_requirement	required_evidence
+registration	control	UE registration completes and the UE remains registered without backend-specific errors	UE log plus N3IWF and AMF logs
+pdu-session-setup	control	PDU session becomes active with the same DNN slice and assigned PDU address	UE log plus SMF UPF and N3IWF logs plus post-setup counters
+ping-ul	traffic	Five UE-to-DN ICMP requests receive five matching replies	UE ping output and simultaneous NWu N3 and N6 captures
+ping-dl	traffic	Five DN-to-UE ICMP requests receive five matching replies	DN ping output and simultaneous NWu N3 and N6 captures
+tcp-ul	traffic	UE-to-DN TCP transfer completes with byte count and integrity match	Sender and receiver logs plus simultaneous captures and counter snapshots
+tcp-dl	traffic	DN-to-UE TCP transfer completes with byte count and integrity match	Sender and receiver logs plus simultaneous captures and counter snapshots
+udp-ul	traffic	UE-to-DN UDP run has no misdelivery and no more than the declared loss threshold	Sender and receiver logs plus simultaneous captures and counter snapshots
+udp-dl	traffic	DN-to-UE UDP run has no misdelivery and no more than the declared loss threshold	Sender and receiver logs plus simultaneous captures and counter snapshots
+pdu-session-modification	lifecycle	A basic PDU-session modification completes and subsequent bidirectional traffic uses the modified state	UE core and N3IWF logs plus before and after traffic and counters
+pdu-session-release	lifecycle	Basic release removes the session and Child SA and traffic for that session no longer passes	UE core and N3IWF logs plus before and after traffic and counters
+qfi-preservation	qos	The assigned QFI is identical in NWu GRE Key and N3 PDU Session Container in each applicable direction	Decoded simultaneous NWu and N3 captures
+rqi-preservation	qos	Downlink PSC RQI is preserved as the independent GRE RQI bit and clear RQI remains clear	Decoded simultaneous N3 and NWu captures with both RQI values
+unknown-qfi-rejection	negative	A packet carrying an unbound QFI is rejected without affecting valid traffic	Injection command capture and rejection counter delta plus valid-flow proof
+invalid-esp-rejection	negative	Unknown-SPI malformed bad-ICV and bad-padding ESP are rejected without cleartext delivery	Injection artifacts NWu capture rejection counter deltas and valid-flow proof
+anti-replay	negative	Duplicate and out-of-window ESP packets are rejected while new in-window packets continue	Replay injection capture replay counter delta and valid-flow proof
+multiple-sessions	isolation	Two PDU sessions remain independently reachable with distinct tunnel state and no cross-session delivery	UE core logs simultaneous traffic captures and session counters
+two-ue-isolation	isolation	Two UEs forward bidirectionally at the same time with no cross-UE delivery or identity leakage	Two UE logs DN logs isolation-filter captures and session SA MAC counters

@@ -1,0 +1,19 @@
+# Replace every CHANGE_ME value. Keep one tab between key and value.
+proof_version	no-kernel-user-plane-plan-v1
+topology_id	CHANGE_ME
+host_access_interface	enp9s0
+tap_interface	n3iwf-cp
+xfrm_interface	CHANGE_ME
+ue_access_interface	CHANGE_ME
+dn_interface	CHANGE_ME
+ue_outer_ipv4	192.168.2.1
+n3iwf_outer_ipv4	192.168.2.2
+ue_pdu_ipv4	CHANGE_ME
+dn_ipv4	192.168.3.2
+logical_n3iwf_ipv4	192.168.4.1
+logical_upf_ipv4	192.168.4.2
+ue_to_n3iwf_spi	CHANGE_ME
+n3iwf_to_ue_spi	CHANGE_ME
+traffic_protocol	tcp
+traffic_port	5503
+capture_seconds	45

@@ -1,0 +1,13 @@
+# Copy this file, replace every CHANGE_ME value, and use the same copy for both backends.
+plan_version	backend-conformance-plan-v1
+topology_id	CHANGE_ME
+ue_profiles	CHANGE_ME
+dnn	internet
+snssai	CHANGE_ME
+ipsec_profile	AES-CBC-128_HMAC-SHA1-96_non-ESN
+qfis	CHANGE_ME
+ping_count	5
+tcp_duration_seconds	60
+udp_duration_seconds	60
+udp_loss_threshold	0.1_percent
+traffic_payload_bytes	CHANGE_ME

@@ -5,7 +5,7 @@ set -e
 # Start script for ONVM Manager
 # -----------------------------------------
 
-# Load the shared same-server N3IWF port contract.
+# Load the shared same-server N3IWF runtime settings.
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TOPOLOGY_FILE="$SCRIPT_DIR/../../config/n3iwf_dp_topology.env"
 if [ ! -r "$TOPOLOGY_FILE" ]; then
@@ -92,7 +92,27 @@ echo "[INFO] Using PCI allow list: $ALLOW_LIST"
 echo "[INFO] Port $ONVM_ACCESS_PORT ($ONVM_ACCESS_PCI): NWu/access"
 echo "[INFO] Port $ONVM_N6_PORT ($ONVM_N6_PCI): N6"
 echo "[INFO] N3 is logical: N3IWF $N3IWF_N3_IPV4 -> UPF $UPF_N3_IPV4 over ONVM rings"
+echo "[INFO] N6: UPF $UPF_N6_IPV4/$N6_PREFIX_LENGTH -> DN $DN_N6_IPV4"
+echo "[INFO] Access: $ONVM_ACCESS_INTERFACE ($N3IWF_TEST_NWU_IPV4/$NWU_PREFIX_LENGTH)"
+echo "[INFO] Management stays on $MANAGEMENT_INTERFACE ($MANAGEMENT_IPV4)"
 echo "[INFO] Ingress service map: $DEFAULT_PORT_SERVICE_MAP"
+
+if [[ ${N3IWF_DP_SOFTWARE_IPSEC:-0} == "1" ]]; then
+  dpdk_libdir=$(pkg-config --variable=libdir libdpdk 2>/dev/null || true)
+  ipsec_mb_drivers=()
+  if [[ -n $dpdk_libdir ]]; then
+    shopt -s nullglob
+    ipsec_mb_drivers=("$dpdk_libdir"/dpdk/pmds-*/librte_crypto_ipsec_mb.so)
+    shopt -u nullglob
+  fi
+  if (( ${#ipsec_mb_drivers[@]} == 0 )); then
+    echo "Error: DPDK IPsec-MB software crypto PMD is not installed" >&2
+    echo "Install Intel IPSec-MB >= 1.4, then rebuild/install DPDK with crypto/ipsec_mb enabled" >&2
+    exit 1
+  fi
+  export ONVM_CRYPTO_VDEV="${ONVM_CRYPTO_VDEV:-crypto_aesni_mb0,max_nb_queue_pairs=1}"
+  echo "[INFO] N3IWF software IPsec cryptodev: $ONVM_CRYPTO_VDEV"
+fi
 
 ONVM_ALLOW_LIST="$ALLOW_LIST" ./scripts/start.sh -k "$PORTMASK" -n "$NF_COREMASK" \
   -i "$DEFAULT_PORT_SERVICE_MAP" -s "$OUTPUT"
