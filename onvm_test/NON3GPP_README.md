@@ -859,6 +859,63 @@ N3IWF-DP error counters.
 
 ## Technical Details
 
+### ONVM clear-path component acceptance
+
+The kernel `start_n3iwf.sh` flow above remains the functional IKE/EAP/NAS
+baseline. It must not run alongside the DPDK N3IWF user plane on the same NWu
+port.
+
+Before attempting a live ONVM run, validate the exact clear-mode packet
+transformation used by `l25gc_n3iwf_dp`:
+
+```bash
+cd ../NFs/onvm-upf
+./env/bin/meson setup --reconfigure build
+./env/bin/meson test -C build --print-errorlogs \
+  n3iwf-dp-codec n3iwf-dp-session n3iwf-dp-child-sa \
+  n3iwf-dp-control n3iwf-dp-punt \
+  n3iwf-dp-clear-path
+```
+
+The version-1 control contract now programs a bidirectional ESP Child-SA pair
+before activating its PDU session. It carries the UE/PDU identity, inbound and
+outbound SPI, IKEv2 transform IDs, directional keys, outer endpoints, traffic
+selectors, NAT-T/ESN flags, replay window, sequence and lifetime values. All
+updates are acknowledged and generation ordered; replacement/deletion erases
+the dataplane key copy. The Unix seqpacket socket is mode `0600`, accepts only
+root or the N3IWF-DP process UID, assigns exactly one writer after HELLO, and
+keeps stats clients read-only. RAN UE NGAP ID zero and multiple QFIs are valid.
+
+The test verifies keyed GRE/QFI to standard GTP-U/PDU Session Container and
+the reverse downlink conversion, TEIDs 100/200, QFI 9, logical N3 addresses,
+ONVM `TONF 1`/`OUT 0` decisions, payload preservation and the unknown-QFI drop
+counter. Clear mode reads the local Ethernet address from the configured DPDK
+access port at startup. The first accepted GRE uplink for a session learns the
+UE source MAC; a later valid uplink can update it. Downlink remains fail-closed
+until that session has a learned UE MAC, then emits Ethernet source=access-port
+MAC and destination=learned-UE MAC. The component test covers first learn, MAC
+change, downlink-before-learning rejection, and both Ethernet addresses. It
+uses a DPDK EAL mempool but does not bind a NIC or traverse live ONVM rings.
+
+During a live clear-mode run, query service 14 counters with:
+
+```bash
+cd ../NFs/n3iwf-dp-client
+go build -o /tmp/n3iwf-dpctl ./cmd/n3iwf-dpctl
+sudo /tmp/n3iwf-dpctl -operation stats
+```
+
+For one successful uplink followed by downlink, expect
+`access_mac_learns=1`, `access_mac_changes=0`, and both packet counters to
+increase. `access_neighbor_drops` increases when a downlink arrives before a
+UE MAC is learned, an uplink carries an invalid source MAC, or its Ethernet
+destination is not the configured access-port MAC. A non-zero
+`access_mac_changes` is useful during UE/NIC movement but should be investigated
+if the test topology is static.
+
+Clear mode is unencrypted and is only an integration aid. Production mode
+continues to drop user traffic until cryptodev ESP processing is implemented.
+
 ### NAS Message Format
 Messages use 3GPP TS 24.502 envelope:
 - 2-byte length (big-endian)
@@ -870,6 +927,13 @@ Messages use 3GPP TS 24.502 envelope:
 - 5G-AKA for UE authentication
 
 ### Troubleshooting
+
+**`Add XFRM policy: file exists` during IKE_AUTH:** this indicates signalling
+Child-SA state left by an unclean prior N3IWF exit. The pinned N3IWF now uses
+exact XFRM state/policy update semantics for a matching SPI or selector and
+rolls back a partially installed pair. Rebuild and restart the N3IWF; do not
+use global `ip xfrm state/policy deleteall` on a host that may run other IPsec
+users.
 
 **N3IWF not responding:**
 ```bash

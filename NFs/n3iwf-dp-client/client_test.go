@@ -36,6 +36,46 @@ func TestMarshalSessionIPv4SingleQFI(t *testing.T) {
 	}
 }
 
+func TestMarshalSessionAcceptsRANUENGAPIDZero(t *testing.T) {
+	_, err := marshalSession(Session{PDUSessionID: 1, UplinkTEID: 1, DownlinkTEID: 2,
+		UEPDUAddress: net.IPv4zero, N3IWFNWuAddress: net.ParseIP("10.0.0.1"),
+		UENWuAddress: net.ParseIP("10.0.0.2"), N3IWFN3Address: net.ParseIP("192.168.2.1"),
+		UPFN3Address: net.ParseIP("192.168.2.2"), QFIs: []uint8{9}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMarshalChildSA(t *testing.T) {
+	payload, err := marshalChildSA(ChildSA{UEID: 0, PDUSessionID: 10,
+		InboundSPI: 0x01020304, OutboundSPI: 0x05060708,
+		EncryptionID: 12, IntegrityID: 2, ReplayWindow: 64, IPProtocol: 47,
+		LocalAddress: net.ParseIP("192.168.127.1"), PeerAddress: net.ParseIP("192.168.127.2"),
+		LocalSelector: net.ParseIP("10.0.0.1"), PeerSelector: net.ParseIP("10.0.0.2"),
+		InboundEncryptionKey: make([]byte, 16), InboundIntegrityKey: make([]byte, 20),
+		OutboundEncryptionKey: make([]byte, 16), OutboundIntegrityKey: make([]byte, 20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 388 {
+		t.Fatalf("payload length=%d", len(payload))
+	}
+	if binary.BigEndian.Uint32(payload[12:16]) != 0x01020304 || payload[60] != 4 || payload[61] != 47 {
+		t.Fatalf("invalid Child SA encoding")
+	}
+}
+
+func TestMarshalChildSARejectsIncompleteKeys(t *testing.T) {
+	_, err := marshalChildSA(ChildSA{InboundSPI: 1, OutboundSPI: 2,
+		EncryptionID: 12, IntegrityID: 2, ReplayWindow: 64, IPProtocol: 47,
+		LocalAddress: net.ParseIP("10.0.0.1"), PeerAddress: net.ParseIP("10.0.0.2"),
+		LocalSelector: net.ParseIP("10.0.0.1"), PeerSelector: net.ParseIP("10.0.0.2"),
+		InboundEncryptionKey: make([]byte, 16), OutboundEncryptionKey: make([]byte, 16)})
+	if err == nil {
+		t.Fatal("incomplete integrity keys accepted")
+	}
+}
+
 func TestMarshalSessionIPv6(t *testing.T) {
 	_, err := marshalSession(Session{
 		UEID:            12,

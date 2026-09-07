@@ -3,11 +3,11 @@
 This package is the control-plane side of the versioned `N3DP` Unix
 `SOCK_SEQPACKET` contract implemented by `l25gc_n3iwf_dp`.
 
-The pinned free5GC N3IWF v1.3.5 under `NFs/n3iwf` should call
-`UpsertSession` only after a successful PDU Session Resource Setup and call
-`DeleteSession` before releasing the local TEID. Each UE/PDU-session pair owns
-a monotonically increasing generation. Retries reuse the same generation;
-modifications and deletion increment it.
+The pinned free5GC N3IWF under `NFs/n3iwf` programs the negotiated Child-SA,
+then the matching PDU session, before returning PDU Session Resource Setup
+success. It deletes the session before the Child-SA and before releasing local
+tunnel state. Each UE/PDU-session pair owns a monotonically increasing
+generation.
 
 Protocol version 1 supports IPv4 session addresses and up to 64 QFIs per PDU
 session. Session updates carry a monotonically increasing generation and stale
@@ -23,8 +23,7 @@ AES-CBC-128 or AES-CBC-256 with HMAC-SHA1-96, without NAT-T or ESN;
 unsupported contracts receive
 `StatusUnsupported` instead of being silently downgraded.
 
-For a clear-mode integration test, inject a deterministic session after the NF
-has created its control socket:
+For a running NF, use the CLI as a read-only observer:
 
 ```bash
 go build -o ../../bin/n3iwf-dpctl ./cmd/n3iwf-dpctl

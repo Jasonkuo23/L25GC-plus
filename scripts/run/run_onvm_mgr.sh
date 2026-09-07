@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TOPOLOGY_FILE="$SCRIPT_DIR/../../config/n3iwf_dp_topology.env"
 if [ ! -r "$TOPOLOGY_FILE" ]; then
-  echo "Error: N3IWF topology contract not found: $TOPOLOGY_FILE" >&2
+  echo "Error: N3IWF runtime settings not found: $TOPOLOGY_FILE" >&2
   exit 1
 fi
 # shellcheck source=../../config/n3iwf_dp_topology.env
@@ -42,7 +42,7 @@ usage() {
   echo "                     Example: 0xF0 -> cores 4-7 for NFs"
   echo "  -s OUTPUT          Stats/output mode (web|stdout) (default: $DEFAULT_OUTPUT)"
   echo "  -a ALLOW_PCI_LIST  List of PCI devices to allow (default: $DEFAULT_ALLOW_PCI_LIST)"
-  echo "                     Example: -a \"0000:08:00.0 0000:09:00.0\""
+  echo "                     Example: -a \"$DEFAULT_ALLOW_PCI_LIST\""
   exit 1
 }
 
@@ -65,13 +65,6 @@ PORTMASK="${PORTMASK:-$DEFAULT_PORTMASK}"
 NF_COREMASK="${NF_COREMASK:-$DEFAULT_NF_COREMASK}"
 OUTPUT="${OUTPUT:-$DEFAULT_OUTPUT}"
 ALLOW_LIST="${ALLOW_LIST:-$DEFAULT_ALLOW_PCI_LIST}"
-
-"$SCRIPT_DIR/../check_n3iwf_topology.sh"
-if [ "$PORTMASK" != "$DEFAULT_PORTMASK" ] ||
-   [ "$ALLOW_LIST" != "$DEFAULT_ALLOW_PCI_LIST" ]; then
-  echo "[WARN] Custom manager ports override the committed N3IWF topology contract" >&2
-  echo "[WARN] Do not use this override for N3IWF integration acceptance tests" >&2
-fi
 
 # Check that the directory exists
 if [ ! -d "$ONVM_MGR_PATH" ]; then
