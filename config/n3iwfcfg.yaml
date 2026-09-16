@@ -41,7 +41,6 @@ configuration:
   # --- N3 Interfaces ---
   # Logical N3 carried only inside ONVM mbufs.
   n3iwfGtpBindAddress: 192.168.4.1
-  userPlaneBackend: onvm
   n3iwfDpControlSocket: /run/l25gc/n3iwf-dp.sock
 
   fqdn: n3iwf.free5gc.org # FQDN of this N3IWF
