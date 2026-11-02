@@ -76,10 +76,8 @@ func sendAccTokenReq(
 	req.SetScope(scope)
 
 	requestStart := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	res, err := client.AccessTokenRequestApi.AccessTokenRequest(
-		ctx, req)
+		context.Background(), req)
 	if err != nil {
 		return nil, nil, err
 	}

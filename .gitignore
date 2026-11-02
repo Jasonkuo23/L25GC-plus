@@ -17,6 +17,3 @@ latancies.txt
 # Generated Go source overlay for the pinned OpenAPI cache patch
 /build/openapi-oauth-overlay*.json
 /scripts/build/__pycache__/
-
-# Generated pinned userspace SCTP sources and native build
-/build/n2-usrsctp/

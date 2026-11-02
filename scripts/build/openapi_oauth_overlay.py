@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the pinned OAuth and ONVM HTTP transport source overlays."""
+"""Generate the pinned OAuth cache and ONVM HTTP server source overlays."""
 
 import argparse
 import json
@@ -13,7 +13,7 @@ SOURCE = "oauth/get_token_context.go"
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--tests", action="store_true", help="include ONVM transport regression tests")
+    parser.add_argument("--tests", action="store_true", help="include ONVM server regression tests")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[2]
@@ -27,10 +27,9 @@ def main():
     replacement = root / "patches/openapi/oauth/get_token_context.go"
     overlay = {str(original): str(replacement)}
     net_module = module_cache / "github.com/nycu-ucr/net@v0.0.0-20250421092837-e154d11df6a2"
-    transport_source = net_module / "http2/onvm_transport.go"
-    if not transport_source.is_file():
+    server_source = net_module / "http2/onvm_server.go"
+    if not server_source.is_file():
         subprocess.run(["go", "mod", "download", "github.com/nycu-ucr/net@v0.0.0-20250421092837-e154d11df6a2"], check=True)
-    overlay[str(transport_source)] = str(root / "patches/net/http2/onvm_transport.go")
     overlay[str(net_module / "http2/onvm_server.go")] = str(root / "patches/net/http2/onvm_server.go")
     if args.tests:
         # Go 1.21 enumerates existing module test files before applying overlays.
