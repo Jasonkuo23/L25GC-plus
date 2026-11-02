@@ -46,7 +46,7 @@ func TestMarshalSessionAcceptsRANUENGAPIDZero(t *testing.T) {
 	}
 }
 
-func TestMarshalChildSA(t *testing.T) {
+func TestMarshalChildSABasic(t *testing.T) {
 	payload, err := marshalChildSA(ChildSA{UEID: 0, PDUSessionID: 10,
 		InboundSPI: 0x01020304, OutboundSPI: 0x05060708,
 		EncryptionID: 12, IntegrityID: 2, ReplayWindow: 64, IPProtocol: 47,
