@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+set -euo pipefail
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$repo"
 
 run_nf() {
     local name=$1
     local core=$2
     echo "Starting $name on core $core..."
-    NF_NAME=$name sudo -E taskset -c $core ./bin/$name > log/${name}.log 2>&1 &
+    sudo -E env -u XIO_SERVICE_CPU NF_NAME="$name" \
+        taskset -c "$core" ./bin/$name > log/${name}.log 2>&1 &
     sleep 2
 }
 
