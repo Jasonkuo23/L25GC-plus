@@ -5,8 +5,8 @@ ROOT_PATH = $(shell pwd)
 OPENAPI_OVERLAY = $(C_BUILD_PATH)/openapi-oauth-overlay.json
 
 NF = $(GO_NF)
-GO_NF = amf ausf nrf nssf pcf smf udm udr chf
-PATCHED_GO_NF = $(GO_NF)
+GO_NF = amf ausf nrf nssf pcf smf udm udr chf n3iwf
+PATCHED_GO_NF = amf ausf nrf nssf pcf smf udm udr chf
 
 NF_GO_FILES = $(shell find $(GO_SRC_PATH)/$(%) -name "*.go" ! -name "*_test.go")
 
@@ -36,6 +36,9 @@ $(OPENAPI_OVERLAY): patches/openapi/oauth/get_token_context.go patches/net/http2
 	python3 scripts/build/openapi_oauth_overlay.py --output $@
 
 $(addprefix $(GO_BIN_PATH)/,$(PATCHED_GO_NF)): $(OPENAPI_OVERLAY)
+
+$(GO_BIN_PATH)/n3iwf: export CGO_CFLAGS_ALLOW = -mrtm
+$(GO_BIN_PATH)/n3iwf: $(wildcard $(GO_SRC_PATH)/n3iwf-up-client/*.go $(GO_SRC_PATH)/n3iwf-up-client/*.c $(GO_SRC_PATH)/n3iwf-up-client/*.h $(GO_SRC_PATH)/n3iwf-up-client/go.mod)
 
 $(GO_BIN_PATH)/%: $(NF_GO_FILES)
 # $(@F): The file-within-directory part of the file name of the target.

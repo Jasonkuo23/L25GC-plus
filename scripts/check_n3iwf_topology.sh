@@ -2,9 +2,10 @@
 set -euo pipefail
 
 workspace_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-topology="$workspace_dir/config/n3iwf_dp_topology.env"
+topology="$workspace_dir/config/n3iwf_up_topology.env"
 upf_config="$workspace_dir/NFs/onvm-upf/5gc/upf_u/config/upf_u.yaml"
-n3iwf_onvm_config="$workspace_dir/onvm_nf_configs/n3iwf_dp.json"
+n3iwf_config="$workspace_dir/config/n3iwfcfg.yaml"
+n3iwf_onvm_config="$workspace_dir/onvm_nf_configs/n3iwf_up.json"
 
 fail() {
     echo "[N3IWF topology] ERROR: $*" >&2
@@ -19,6 +20,7 @@ require_uint() {
 
 yaml_scalar() {
     local key=$1
+    local file=${2:-$upf_config}
     awk -v wanted="$key" '
         $1 == wanted ":" {
             value = $2
@@ -26,7 +28,7 @@ yaml_scalar() {
             print value
             exit
         }
-    ' "$upf_config"
+    ' "$file"
 }
 
 json_number() {
@@ -46,11 +48,11 @@ json_number() {
 [[ -r $upf_config ]] || fail "missing $upf_config"
 [[ -r $n3iwf_onvm_config ]] || fail "missing $n3iwf_onvm_config"
 
-# shellcheck source=../config/n3iwf_dp_topology.env
+# shellcheck source=../config/n3iwf_up_topology.env
 source "$topology"
 
-for name in N3IWF_DP_SERVICE_ID N3IWF_DP_INSTANCE_ID UPF_U_SERVICE_ID \
-    UPF_C_SERVICE_ID UPF_U_CORE_ID UPF_C_CORE_ID N3IWF_DP_CORE_ID \
+for name in N3IWF_UP_SERVICE_ID N3IWF_UP_INSTANCE_ID UPF_U_SERVICE_ID \
+    UPF_C_SERVICE_ID UPF_U_CORE_ID UPF_C_CORE_ID N3IWF_UP_CORE_ID N3IWF_CP_EAL_CORE_ID \
     ONVM_PORTMASK ONVM_ACCESS_PORT ONVM_N6_PORT NWU_IP_MTU \
     LOGICAL_N3_IP_MTU N6_IP_MTU N3IWF_MAX_INNER_IP_PACKET; do
     require_uint "$name"
@@ -58,24 +60,34 @@ done
 
 [[ $NWU_IP_MTU == 1500 && $LOGICAL_N3_IP_MTU == 1500 &&
    $N6_IP_MTU == 1500 && $N3IWF_MAX_INNER_IP_PACKET == 1410 ]] ||
-    fail "MTU contract differs from compiled n3iwf_dp_mtu.h profile"
+    fail "MTU contract differs from compiled n3iwf_up_mtu.h profile"
 
-for name in N3IWF_DP_SERVICE_ID UPF_U_SERVICE_ID UPF_C_SERVICE_ID; do
+for name in N3IWF_UP_SERVICE_ID UPF_U_SERVICE_ID UPF_C_SERVICE_ID; do
     value=${!name}
     ((value > 0 && value < 32)) || fail "$name=$value is outside ONVM range 1..31"
 done
 
-[[ $N3IWF_DP_SERVICE_ID != "$UPF_U_SERVICE_ID" ]] ||
-    fail "N3IWF-DP and UPF-U service IDs collide"
-[[ $N3IWF_DP_SERVICE_ID != "$UPF_C_SERVICE_ID" ]] ||
-    fail "N3IWF-DP and UPF-C service IDs collide"
+[[ $N3IWF_UP_SERVICE_ID != "$UPF_U_SERVICE_ID" ]] ||
+    fail "N3IWF-UP and UPF-U service IDs collide"
+[[ $N3IWF_UP_SERVICE_ID != "$UPF_C_SERVICE_ID" ]] ||
+    fail "N3IWF-UP and UPF-C service IDs collide"
 [[ $UPF_U_SERVICE_ID != "$UPF_C_SERVICE_ID" ]] ||
     fail "UPF-U and UPF-C service IDs collide"
 
 [[ $UPF_U_CORE_ID != "$UPF_C_CORE_ID" &&
-   $UPF_U_CORE_ID != "$N3IWF_DP_CORE_ID" &&
-   $UPF_C_CORE_ID != "$N3IWF_DP_CORE_ID" ]] ||
-    fail "default UPF-U, UPF-C and N3IWF-DP lcores must be distinct"
+   $UPF_U_CORE_ID != "$N3IWF_UP_CORE_ID" &&
+   $UPF_C_CORE_ID != "$N3IWF_UP_CORE_ID" ]] ||
+    fail "default UPF-U, UPF-C and N3IWF-UP lcores must be distinct"
+
+[[ $N3IWF_CP_EAL_CORE_ID != "$N3IWF_UP_CORE_ID" &&
+   $N3IWF_CP_EAL_CORE_ID != "$UPF_U_CORE_ID" &&
+   $N3IWF_CP_EAL_CORE_ID != "$UPF_C_CORE_ID" ]] ||
+    fail "N3IWF CP EAL lcore must differ from the DP and UPF lcores"
+[[ ${N3IWF_UP_CONTROL_NAME:-} =~ ^[A-Za-z0-9_]{1,20}$ ]] ||
+    fail "N3IWF_UP_CONTROL_NAME must be a 1..20 character DPDK resource name"
+
+[[ $(yaml_scalar n3iwfUpControlName "$n3iwf_config") == "$N3IWF_UP_CONTROL_NAME" ]] ||
+    fail "N3IWF CP and DP control memzone names differ"
 
 [[ $ONVM_ACCESS_PORT != "$ONVM_N6_PORT" ]] ||
     fail "access and N6 must use different physical DPDK ports"
@@ -105,22 +117,22 @@ done
     fail "UPF same-server N3IWF routing is not enabled"
 [[ $(yaml_scalar peer_n3_ip) == "$N3IWF_N3_IPV4" ]] ||
     fail "UPF N3IWF peer address does not match the topology contract"
-[[ $(yaml_scalar service_id) == "$N3IWF_DP_SERVICE_ID" ]] ||
+[[ $(yaml_scalar service_id) == "$N3IWF_UP_SERVICE_ID" ]] ||
     fail "UPF N3IWF service does not match the topology contract"
 
-[[ $(json_number serviceid) == "$N3IWF_DP_SERVICE_ID" ]] ||
-    fail "n3iwf_dp.json service ID does not match the topology contract"
-[[ $(json_number instanceid) == "$N3IWF_DP_INSTANCE_ID" ]] ||
-    fail "n3iwf_dp.json instance ID does not match the topology contract"
+[[ $(json_number serviceid) == "$N3IWF_UP_SERVICE_ID" ]] ||
+    fail "n3iwf_up.json service ID does not match the topology contract"
+[[ $(json_number instanceid) == "$N3IWF_UP_INSTANCE_ID" ]] ||
+    fail "n3iwf_up.json instance ID does not match the topology contract"
 [[ $(json_number portmask) == "$ONVM_PORTMASK" ]] ||
-    fail "n3iwf_dp.json portmask does not match the topology contract"
+    fail "n3iwf_up.json portmask does not match the topology contract"
 
 for config in "$workspace_dir"/onvm_nf_configs/*.json; do
     [[ $config == "$n3iwf_onvm_config" ]] && continue
-    [[ $(json_number serviceid "$config") != "$N3IWF_DP_SERVICE_ID" ]] ||
-        fail "service $N3IWF_DP_SERVICE_ID also appears in $config"
-    [[ $(json_number instanceid "$config") != "$N3IWF_DP_INSTANCE_ID" ]] ||
-        fail "instance $N3IWF_DP_INSTANCE_ID also appears in $config"
+    [[ $(json_number serviceid "$config") != "$N3IWF_UP_SERVICE_ID" ]] ||
+        fail "service $N3IWF_UP_SERVICE_ID also appears in $config"
+    [[ $(json_number instanceid "$config") != "$N3IWF_UP_INSTANCE_ID" ]] ||
+        fail "instance $N3IWF_UP_INSTANCE_ID also appears in $config"
 done
 
 if command -v lspci >/dev/null 2>&1; then
@@ -131,7 +143,7 @@ if command -v lspci >/dev/null 2>&1; then
 fi
 
 echo "[N3IWF topology] OK"
-echo "  services: n3iwf-dp=$N3IWF_DP_SERVICE_ID upf-u=$UPF_U_SERVICE_ID upf-c=$UPF_C_SERVICE_ID"
+echo "  services: n3iwf-up=$N3IWF_UP_SERVICE_ID upf-u=$UPF_U_SERVICE_ID upf-c=$UPF_C_SERVICE_ID"
 echo "  physical: port $ONVM_ACCESS_PORT ($ONVM_ACCESS_PCI)=NWu/access, port $ONVM_N6_PORT ($ONVM_N6_PCI)=N6"
 echo "  logical N3: n3iwf=$N3IWF_N3_IPV4 upf=$UPF_N3_IPV4 (direct ONVM mbuf)"
 echo "  local NWu test: ESP outer n3iwf=$N3IWF_TEST_NWU_IPV4, GRE inner n3iwf=$N3IWF_IPSEC_INNER_IPV4 ue=$N3IWF_TEST_UE_IPSEC_INNER_IPV4"

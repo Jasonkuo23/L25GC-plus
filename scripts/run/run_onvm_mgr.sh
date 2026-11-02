@@ -7,12 +7,12 @@ set -e
 
 # Load the shared same-server N3IWF runtime settings.
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-TOPOLOGY_FILE="$SCRIPT_DIR/../../config/n3iwf_dp_topology.env"
+TOPOLOGY_FILE="$SCRIPT_DIR/../../config/n3iwf_up_topology.env"
 if [ ! -r "$TOPOLOGY_FILE" ]; then
   echo "Error: N3IWF runtime settings not found: $TOPOLOGY_FILE" >&2
   exit 1
 fi
-# shellcheck source=../../config/n3iwf_dp_topology.env
+# shellcheck source=../../config/n3iwf_up_topology.env
 source "$TOPOLOGY_FILE"
 
 # Set working directory (default: user home directory)
@@ -29,7 +29,7 @@ DEFAULT_PORTMASK="$ONVM_PORTMASK"
 DEFAULT_NF_COREMASK="0xFFF8"
 DEFAULT_OUTPUT="stdout"
 DEFAULT_ALLOW_PCI_LIST="$ONVM_ACCESS_PCI $ONVM_N6_PCI"
-DEFAULT_PORT_SERVICE_MAP="$ONVM_ACCESS_PORT:$N3IWF_DP_SERVICE_ID,$ONVM_N6_PORT:$UPF_U_SERVICE_ID"
+DEFAULT_PORT_SERVICE_MAP="$ONVM_ACCESS_PORT:$N3IWF_UP_SERVICE_ID,$ONVM_N6_PORT:$UPF_U_SERVICE_ID"
 
 # Usage function
 usage() {
@@ -90,7 +90,7 @@ echo "[INFO] Access: $ONVM_ACCESS_INTERFACE ($N3IWF_TEST_NWU_IPV4/$NWU_PREFIX_LE
 echo "[INFO] Management stays on $MANAGEMENT_INTERFACE ($MANAGEMENT_IPV4)"
 echo "[INFO] Ingress service map: $DEFAULT_PORT_SERVICE_MAP"
 
-if [[ ${N3IWF_DP_SOFTWARE_IPSEC:-0} == "1" ]]; then
+if [[ ${N3IWF_UP_SOFTWARE_IPSEC:-0} == "1" ]]; then
   dpdk_libdir=$(pkg-config --variable=libdir libdpdk 2>/dev/null || true)
   ipsec_mb_drivers=()
   if [[ -n $dpdk_libdir ]]; then

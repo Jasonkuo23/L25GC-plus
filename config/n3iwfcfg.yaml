@@ -41,7 +41,12 @@ configuration:
   # --- N3 Interfaces ---
   # Logical N3 carried only inside ONVM mbufs.
   n3iwfGtpBindAddress: 192.168.4.1
-  n3iwfDpControlSocket: /run/l25gc/n3iwf-dp.sock
+  # DPDK memzone/rings; CP and DP share the ONVM primary's memory domain.
+  n3iwfUpControlName: N3DP_CTRL
+  # Lcore 15 must be distinct from manager, UPF and N3IWF-UP lcores.
+  # Match --file-prefix / --legacy-mem / --single-file-segments if used by primary.
+  n3iwfUpEalArgs: ["-l", "15", "-n", "3"]
+  n3iwfUpControlTrace: false
 
   fqdn: n3iwf.free5gc.org # FQDN of this N3IWF
 
