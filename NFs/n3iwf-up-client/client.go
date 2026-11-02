@@ -243,7 +243,11 @@ func (c *Client) roundTrip(
 	if err != nil {
 		return ACK{}, err
 	}
-	return parseACK(response, xid)
+	ack, err := parseACK(response, xid)
+	if err == nil && (ack.AppliedGeneration != generation || binary.BigEndian.Uint64(response[16:24]) != generation) {
+		err = errors.New("dataplane acknowledgement generation mismatch")
+	}
+	return ack, err
 }
 
 func (c *Client) exchange(ctx context.Context, messageType uint16,
@@ -274,7 +278,11 @@ func (c *Client) exchange(ctx context.Context, messageType uint16,
 	if messageType == MessageStatsGet {
 		_, err = parseStats(response, xid)
 	} else {
-		_, err = parseACK(response, xid)
+		var ack ACK
+		ack, err = parseACK(response, xid)
+		if err == nil && (ack.AppliedGeneration != generation || binary.BigEndian.Uint64(response[16:24]) != generation) {
+			err = errors.New("dataplane acknowledgement generation mismatch")
+		}
 		if err == nil && messageType == MessageHello {
 			c.role = payload[0]
 		}

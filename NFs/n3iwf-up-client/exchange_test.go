@@ -10,10 +10,11 @@ import (
 )
 
 type fakeTransport struct {
-	requests      [][]byte
-	last          []byte
-	closed        bool
-	waitForCancel bool
+	requests        [][]byte
+	last            []byte
+	closed          bool
+	waitForCancel   bool
+	wrongGeneration bool
 }
 
 func (f *fakeTransport) send(request []byte) error {
@@ -27,6 +28,9 @@ func (f *fakeTransport) receive(ctx context.Context) ([]byte, error) {
 		return nil, ctx.Err()
 	}
 	generation := binary.BigEndian.Uint64(f.last[16:24])
+	if f.wrongGeneration {
+		generation++
+	}
 	payload := make([]byte, 16)
 	binary.BigEndian.PutUint64(payload[8:16], generation)
 	return marshalMessage(MessageACK, binary.BigEndian.Uint32(f.last[12:16]), generation, payload), nil
@@ -91,6 +95,14 @@ func TestTimeoutRetiresLeaseAndReconnectsRoleWithoutReplayingUpdate(t *testing.T
 	}
 	if binary.BigEndian.Uint64(second.requests[1][16:24]) != 3 {
 		t.Fatal("old update replayed")
+	}
+}
+
+func TestACKMustMatchRequestedGeneration(t *testing.T) {
+	c := New("unused")
+	c.open = func(Options) (packetTransport, error) { return &fakeTransport{wrongGeneration: true}, nil }
+	if err := c.DeleteSession(context.Background(), 4, 1, 10); err == nil {
+		t.Fatal("wrong-generation ACK accepted")
 	}
 }
 
