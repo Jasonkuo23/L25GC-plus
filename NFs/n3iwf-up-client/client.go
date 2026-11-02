@@ -1,6 +1,6 @@
-// Package n3iwfdp implements the versioned control contract between the
+// Package n3iwfup implements the versioned control contract between the
 // free5GC-derived N3IWF control plane and the ONVM N3IWF dataplane.
-package n3iwfdp
+package n3iwfup
 
 import (
 	"context"
@@ -118,40 +118,58 @@ type Stats struct {
 }
 
 type Client struct {
-	path string
-
-	mu   sync.Mutex
-	conn *net.UnixConn
-	xid  uint32
+	options Options
+	mu      sync.Mutex
+	conn    packetTransport
+	xid     uint32
+	role    uint8
+	open    func(Options) (packetTransport, error)
 }
 
-func New(path string) *Client {
-	return &Client{path: path}
+func New(controlName string) *Client {
+	return NewWithOptions(Options{ControlName: controlName})
+}
+
+func NewWithOptions(options Options) *Client {
+	options.EALArgs = append([]string(nil), options.EALArgs...)
+	return &Client{options: options, open: openDPDK}
 }
 
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.conn == nil {
-		return nil
-	}
-	err := c.conn.Close()
-	c.conn = nil
-	return err
+	c.disconnect()
+	return nil
 }
 
-func (c *Client) connect() error {
+func (c *Client) disconnect() {
+	if c.conn != nil {
+		c.conn.close()
+		c.conn = nil
+	}
+}
+
+func (c *Client) connect(ctx context.Context) error {
 	if c.conn != nil {
 		return nil
 	}
-	conn, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{
-		Name: c.path,
-		Net:  "unixpacket",
-	})
+	conn, err := c.open(c.options)
 	if err != nil {
 		return err
 	}
 	c.conn = conn
+	// A fresh shared-memory lease starts without a role. Reacquire the last
+	// acknowledged role on reconnect; never replay a state-changing request.
+	if c.role != 0 {
+		response, xid, err := c.exchangeConnected(ctx, MessageHello, 0, []byte{c.role, 0, 0, 0})
+		if err == nil {
+			_, err = parseACK(response, xid)
+		}
+		if err != nil {
+			c.disconnect()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -229,38 +247,63 @@ func (c *Client) roundTrip(
 }
 
 func (c *Client) exchange(ctx context.Context, messageType uint16,
-	generation uint64, payload []byte) ([]byte, uint32, error) {
+	generation uint64, payload []byte) (response []byte, xid uint32, err error) {
+	started := time.Now()
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+	}
+	defer func() {
+		if trace := c.options.Trace; trace != nil {
+			trace(messageType, generation, time.Since(started).Nanoseconds(), err)
+		}
+	}()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err = ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err = c.connect(ctx); err != nil {
+		return nil, 0, err
+	}
+	response, xid, err = c.exchangeConnected(ctx, messageType, generation, payload)
+	if err != nil {
+		return nil, xid, err
+	}
+	if messageType == MessageStatsGet {
+		_, err = parseStats(response, xid)
+	} else {
+		_, err = parseACK(response, xid)
+		if err == nil && messageType == MessageHello {
+			c.role = payload[0]
+		}
+	}
+	return response, xid, err
+}
 
-	if err := c.connect(); err != nil {
+func (c *Client) exchangeConnected(ctx context.Context, messageType uint16,
+	generation uint64, payload []byte) ([]byte, uint32, error) {
+	if err := ctx.Err(); err != nil {
+		c.disconnect()
 		return nil, 0, err
 	}
 	c.xid++
 	xid := c.xid
 	request := marshalMessage(messageType, xid, generation, payload)
 	defer clearBytes(request)
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := c.conn.SetDeadline(deadline); err != nil {
-			return nil, 0, err
-		}
-	} else if err := c.conn.SetDeadline(time.Time{}); err != nil {
-		return nil, 0, err
+	if err := c.conn.send(request); err != nil {
+		c.disconnect()
+		return nil, xid, err
 	}
-	if _, err := c.conn.Write(request); err != nil {
-		_ = c.conn.Close()
-		c.conn = nil
-		return nil, 0, err
-	}
-
-	response := make([]byte, 2048)
-	n, err := c.conn.Read(response)
+	response, err := c.conn.receive(ctx)
 	if err != nil {
-		_ = c.conn.Close()
-		c.conn = nil
-		return nil, 0, err
+		// A timeout is ambiguous: DP may already have applied the update.
+		// Retire this lease so a delayed ACK cannot satisfy the next request.
+		c.disconnect()
+		return nil, xid, err
 	}
-	return response[:n], xid, nil
+	return response, xid, nil
 }
 
 func marshalMessage(messageType uint16, xid uint32, generation uint64, payload []byte) []byte {
@@ -308,7 +351,7 @@ func marshalSession(session Session) ([]byte, error) {
 		return nil, fmt.Errorf("UPF N3 address: %w", err)
 	}
 
-	// Must exactly match struct n3iwf_dp_session_wire.
+	// Must exactly match struct n3iwf_up_session_wire.
 	payload := make([]byte, 8+4+4+4+1+1+2+(16*5)+maxQFI)
 	binary.BigEndian.PutUint64(payload[0:8], session.UEID)
 	binary.BigEndian.PutUint32(payload[8:12], session.PDUSessionID)
@@ -371,7 +414,7 @@ func marshalChildSA(sa ChildSA) ([]byte, error) {
 		return nil, errors.New("integrity transform requires directional integrity keys")
 	}
 
-	// Must exactly match struct n3iwf_dp_child_sa_wire (388 bytes).
+	// Must exactly match struct n3iwf_up_child_sa_wire (388 bytes).
 	payload := make([]byte, 132+(4*maxKeyLen))
 	binary.BigEndian.PutUint64(payload[0:8], sa.UEID)
 	binary.BigEndian.PutUint32(payload[8:12], sa.PDUSessionID)
