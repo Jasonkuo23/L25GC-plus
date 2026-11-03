@@ -53,9 +53,11 @@ $(GO_BIN_PATH)/n3iwf: $(wildcard $(GO_SRC_PATH)/n3iwf-up-client/*.go $(GO_SRC_PA
 
 $(GO_BIN_PATH)/%: $(NF_GO_FILES)
 # $(@F): The file-within-directory part of the file name of the target.
+# Go does not track changes to external C archives in its build cache.
+# Recompile when the native SCTP archive is newer than the NF binary.
 	@echo "Start building $(@F)...."
 	cd $(GO_SRC_PATH)/$(@F)/cmd && \
-	CGO_ENABLED=1 go build $(if $(filter $(@F),$(PATCHED_GO_NF)),-overlay=$(ROOT_PATH)/$(OPENAPI_OVERLAY)) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o $(ROOT_PATH)/$@ main.go
+	CGO_ENABLED=1 go build $(if $(filter $(N2_SCTP_LIB),$?),-a) $(if $(filter $(@F),$(PATCHED_GO_NF)),-overlay=$(ROOT_PATH)/$(OPENAPI_OVERLAY)) -gcflags "$(GCFLAGS)" -ldflags "$(LDFLAGS)" -o $(ROOT_PATH)/$@ main.go
 
 vpath %.go $(addprefix $(GO_SRC_PATH)/, $(GO_NF))
 
