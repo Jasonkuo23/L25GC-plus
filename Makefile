@@ -45,7 +45,10 @@ $(OPENAPI_OVERLAY): patches/openapi/oauth/get_token_context.go patches/net/http2
 
 $(addprefix $(GO_BIN_PATH)/,$(PATCHED_GO_NF)): $(OPENAPI_OVERLAY)
 
-$(GO_BIN_PATH)/n3iwf: export CGO_CFLAGS_ALLOW = -mrtm
+$(GO_BIN_PATH)/amf $(GO_BIN_PATH)/n3iwf: export CGO_CFLAGS_ALLOW = -mrtm
+$(GO_BIN_PATH)/amf $(GO_BIN_PATH)/n3iwf: $(N2_TRANSPORT_FILES) $(N2_SCTP_LIB)
+$(GO_BIN_PATH)/amf: $(shell find $(GO_SRC_PATH)/amf -name '*.go' ! -name '*_test.go') $(GO_SRC_PATH)/amf/go.mod $(GO_SRC_PATH)/amf/go.sum
+$(GO_BIN_PATH)/n3iwf: $(shell find $(GO_SRC_PATH)/n3iwf -name '*.go' ! -name '*_test.go') $(GO_SRC_PATH)/n3iwf/go.mod $(GO_SRC_PATH)/n3iwf/go.sum
 $(GO_BIN_PATH)/n3iwf: $(wildcard $(GO_SRC_PATH)/n3iwf-up-client/*.go $(GO_SRC_PATH)/n3iwf-up-client/*.c $(GO_SRC_PATH)/n3iwf-up-client/*.h $(GO_SRC_PATH)/n3iwf-up-client/go.mod)
 
 $(GO_BIN_PATH)/%: $(NF_GO_FILES)

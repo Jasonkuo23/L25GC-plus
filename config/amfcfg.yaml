@@ -3,6 +3,16 @@ info:
   description: AMF initial local configuration
 
 configuration:
+  # Same-host N2: NGAP/SCTP/IPv4 over the existing ONVM memory domain.
+  # Start AMF before N3IWF. No automatic transport fallback.
+  n2Transport: sctp-shm
+  n2SharedMemory:
+    name: N2_SCTP
+    localIPs: [192.168.1.2]
+    peerIPs: [192.168.2.2]
+    port: 38412
+    dscp: 0
+    writeTimeout: 5s
   amfName: AMF # the name of this AMF
   ngapIpList:  # the IP list of N2 interfaces on this AMF
     - 192.168.1.2
