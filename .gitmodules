@@ -1,7 +1,7 @@
 [submodule "NFs/amf"]
 	path = NFs/amf
-	url = https://github.com/nycu-ucr/amf.git
-	branch = next
+	url = https://github.com/Jasonkuo23/amf.git
+	branch = feat/n3iwf-N2-share-memory
 [submodule "NFs/ausf"]
 	path = NFs/ausf
 	url = https://github.com/nycu-ucr/ausf.git
@@ -36,7 +36,8 @@
 	branch = next
 [submodule "onvm-upf"]
 	path = NFs/onvm-upf
-	url = https://github.com/nycu-ucr/onvm-upf.git
+	url = https://github.com/Jasonkuo23/onvm-upf.git
+	branch = feat/n3iwf
 [submodule "xio"]
 	path = NFs/xio
 	url = https://github.com/nycu-ucr/onvmpoller.git
@@ -51,4 +52,5 @@
 	url = https://github.com/openairinterface/openairinterface5g.git
 [submodule "NFs/n3iwf"]
 	path = NFs/n3iwf
-	url = https://github.com/free5gc/n3iwf.git
+	url = https://github.com/Jasonkuo23/n3iwf.git
+	branch = feat/L25GC-plus
