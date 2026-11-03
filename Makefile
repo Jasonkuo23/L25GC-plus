@@ -3,6 +3,9 @@ GO_SRC_PATH = NFs
 C_BUILD_PATH = build
 ROOT_PATH = $(shell pwd)
 OPENAPI_OVERLAY = $(C_BUILD_PATH)/openapi-oauth-overlay.json
+N2_TRANSPORT_PATH = lib/n2-transport
+N2_SCTP_LIB = $(C_BUILD_PATH)/n2-usrsctp/install/lib/libusrsctp.a
+N2_TRANSPORT_FILES = $(wildcard $(N2_TRANSPORT_PATH)/*.go $(N2_TRANSPORT_PATH)/*.c $(N2_TRANSPORT_PATH)/*.h $(N2_TRANSPORT_PATH)/go.mod)
 
 NF = $(GO_NF)
 GO_NF = amf ausf nrf nssf pcf smf udm udr chf n3iwf
@@ -19,7 +22,7 @@ NF_GO_FILES = $(shell find $(GO_SRC_PATH)/$(%) -name "*.go" ! -name "*_test.go")
 #           -X github.com/free5gc/util/version.COMMIT_HASH=$(COMMIT_HASH) \
 #           -X github.com/free5gc/util/version.COMMIT_TIME=$(COMMIT_TIME)
 
-.PHONY: $(NF) clean
+.PHONY: $(NF) clean n2-usrsctp
 
 .DEFAULT_GOAL: nfs
 
@@ -31,6 +34,11 @@ debug: GCFLAGS += -N -l
 debug: all
 
 $(GO_NF): % : $(GO_BIN_PATH)/%
+
+n2-usrsctp: $(N2_SCTP_LIB)
+
+$(N2_SCTP_LIB): scripts/build/n2_usrsctp.py $(N2_TRANSPORT_PATH)/native/ip_adapter.inc
+	python3 scripts/build/n2_usrsctp.py $(if $(USRSCTP_SOURCE),--source "$(USRSCTP_SOURCE)")
 
 $(OPENAPI_OVERLAY): patches/openapi/oauth/get_token_context.go patches/net/http2/onvm_server.go scripts/build/openapi_oauth_overlay.py
 	python3 scripts/build/openapi_oauth_overlay.py --output $@
