@@ -7,7 +7,7 @@ run_nf() {
     local name=$1
     local core=$2
     echo "Starting $name on core $core..."
-    sudo -E env -u XIO_SERVICE_CPU NF_NAME="$name" \
+    sudo -E env -u XIO_SERVICE_CPU ONVMPOLLER_ENABLE=1 NF_NAME="$name" \
         taskset -c "$core" ./bin/$name > log/${name}.log 2>&1 &
     sleep 2
 }
