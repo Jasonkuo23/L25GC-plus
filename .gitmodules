@@ -41,6 +41,7 @@
 [submodule "xio"]
 	path = NFs/xio
 	url = https://github.com/nycu-ucr/onvmpoller.git
+	branch = nrdc-test
 [submodule "webconsole"]
 	path = webconsole
 	url = https://github.com/free5gc/webconsole.git
