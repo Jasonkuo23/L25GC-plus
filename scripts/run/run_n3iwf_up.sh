@@ -117,5 +117,5 @@ fi
 
 exec sudo "$binary" \
     -l "$core_id" -n 3 --proc-type=secondary -- \
-    -n "$instance_id" -r "$service_id" -- \
+    -m -n "$instance_id" -r "$service_id" -- \
     "${nf_args[@]}"
